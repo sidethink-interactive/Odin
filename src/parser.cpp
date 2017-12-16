@@ -5,10 +5,9 @@ struct DeclInfo;
 enum ParseFileError {
 	ParseFile_None,
 
-	ParseFile_WrongExtension,
 	ParseFile_InvalidFile,
 	ParseFile_EmptyFile,
-	ParseFile_Permission,
+	ParseFile_Permission, 
 	ParseFile_NotFound,
 	ParseFile_InvalidToken,
 
@@ -2143,8 +2142,100 @@ AstNode *convert_stmt_to_body(AstFile *f, AstNode *stmt) {
 	return ast_block_stmt(f, stmts, open, close);
 }
 
+// This is supposed to look for patterns that look like a function definition.
+// It's looking for an "(a,b:" pattern, which should match for every proc?
+// For backwards-compatibility, this is not used when the "proc" token is prepended,
+// because Odin allows for unnamed arguments if there is no body present.
+bool is_parens_a_proc(AstFile *f) {
+	if(f->curr_token.kind == Token_OpenParen) {
+		isize i = f->curr_token_index + 1;
+		while(f->tokens[i].kind == Token_Comment) i++;
+		if(f->tokens[i].kind == Token_CloseParen) return true;
+		for(; i < f->tokens.count; i++) {
+			while(f->tokens[i].kind == Token_Comment) i++;
+			if(f->tokens[i].kind == Token_Ident) {
+				i++;
+				while(f->tokens[i].kind == Token_Comment) i++;
+				if(f->tokens[i].kind == Token_Colon) {
+					return true;
+				} else if(f->tokens[i].kind == Token_Comma) {
+					continue;
+				} else {
+					return false;
+				}
+			}
+		}
+	}
+	return false;
+}
 
+// The parse_operand logic for procs is broken out here so that
+// the Helm-style () -> () {} style *and* the Odin-style proc() -> () {} can coexist.
+// It is expected that the current token cursor is pointing at the first open paren, and that
+// that token has *not* yet been consumed.
+AstNode *parse_operand_proc(AstFile *f, bool lhs, Token token, bool must_be_proc = false) {
 
+	if (f->curr_token.kind == Token_OpenBracket) { // ProcGrouping
+		Token open = expect_token(f, Token_OpenBracket);
+
+		Array<AstNode *> args = {};
+		array_init(&args, heap_allocator());
+
+		while (f->curr_token.kind != Token_CloseBracket &&
+				f->curr_token.kind != Token_EOF) {
+			AstNode *elem = parse_expr(f, false);
+			array_add(&args, elem);
+
+			if (!allow_token(f, Token_Comma)) {
+				break;
+			}
+		}
+
+		Token close = expect_token(f, Token_CloseBracket);
+
+		if (args.count == 0) {
+			syntax_error(token, "Expected a least 1 argument in a procedure grouping");
+		}
+
+		return ast_proc_grouping(f, token, open, close, args);
+	}
+
+	if(!must_be_proc && !is_parens_a_proc(f)) return nullptr;
+
+	AstNode *type = parse_proc_type(f, token);
+
+	if (f->allow_type && f->expr_level < 0) {
+		return type;
+	}
+
+	u64 tags = type->ProcType.tags;
+
+	if (allow_token(f, Token_Undef)) {
+		return ast_proc_lit(f, type, nullptr, tags);
+	} else if (f->curr_token.kind == Token_OpenBrace) {
+		AstNode *curr_proc = f->curr_proc;
+		AstNode *body = nullptr;
+		f->curr_proc = type;
+		body = parse_body(f);
+		f->curr_proc = curr_proc;
+
+		return ast_proc_lit(f, type, body, tags);
+	} else if (allow_token(f, Token_do)) {
+		AstNode *curr_proc = f->curr_proc;
+		AstNode *body = nullptr;
+		f->curr_proc = type;
+		body = convert_stmt_to_body(f, parse_stmt(f));
+		f->curr_proc = curr_proc;
+
+		return ast_proc_lit(f, type, body, tags);
+	}
+
+	if (tags != 0) {
+		syntax_error(token, "A procedure type cannot have tags");
+	}
+
+	return type;
+}
 
 AstNode *parse_operand(AstFile *f, bool lhs) {
 	AstNode *operand = nullptr; // Operand
@@ -2201,6 +2292,10 @@ AstNode *parse_operand(AstFile *f, bool lhs) {
 		break;
 
 	case Token_OpenParen: {
+
+		AstNode *proc = parse_operand_proc(f, lhs, f->curr_token);
+		if(proc != nullptr) return proc;
+
 		Token open, close;
 		// NOTE(bill): Skip the Paren Expression
 		open = expect_token(f, Token_OpenParen);
@@ -2266,68 +2361,11 @@ AstNode *parse_operand(AstFile *f, bool lhs) {
 		return expr;
 	} break;
 
+
 	// Parse Procedure Type or Literal or Grouping
 	case Token_proc: {
 		Token token = expect_token(f, Token_proc);
-
-		if (f->curr_token.kind == Token_OpenBracket) { // ProcGrouping
-			Token open = expect_token(f, Token_OpenBracket);
-
-			Array<AstNode *> args = {};
-			array_init(&args, heap_allocator());
-
-			while (f->curr_token.kind != Token_CloseBracket &&
-			       f->curr_token.kind != Token_EOF) {
-				AstNode *elem = parse_expr(f, false);
-				array_add(&args, elem);
-
-				if (!allow_token(f, Token_Comma)) {
-					break;
-				}
-			}
-
-			Token close = expect_token(f, Token_CloseBracket);
-
-			if (args.count == 0) {
-				syntax_error(token, "Expected a least 1 argument in a procedure grouping");
-			}
-
-			return ast_proc_grouping(f, token, open, close, args);
-		}
-
-		AstNode *type = parse_proc_type(f, token);
-
-		if (f->allow_type && f->expr_level < 0) {
-			return type;
-		}
-
-		u64 tags = type->ProcType.tags;
-
-		if (allow_token(f, Token_Undef)) {
-			return ast_proc_lit(f, type, nullptr, tags);
-		} else if (f->curr_token.kind == Token_OpenBrace) {
-			AstNode *curr_proc = f->curr_proc;
-			AstNode *body = nullptr;
-			f->curr_proc = type;
-			body = parse_body(f);
-			f->curr_proc = curr_proc;
-
-			return ast_proc_lit(f, type, body, tags);
-		} else if (allow_token(f, Token_do)) {
-			AstNode *curr_proc = f->curr_proc;
-			AstNode *body = nullptr;
-			f->curr_proc = type;
-			body = convert_stmt_to_body(f, parse_stmt(f));
-			f->curr_proc = curr_proc;
-
-			return ast_proc_lit(f, type, body, tags);
-		}
-
-		if (tags != 0) {
-			syntax_error(token, "A procedure type cannot have tags");
-		}
-
-		return type;
+		return parse_operand_proc(f, lhs, token, true);
 	}
 
 
@@ -4672,11 +4710,16 @@ Array<AstNode *> parse_stmt_list(AstFile *f) {
 }
 
 
+
 ParseFileError init_ast_file(AstFile *f, String fullpath, TokenPos *err_pos) {
+
 	f->fullpath = string_trim_whitespace(fullpath); // Just in case
-	if (!string_ends_with(f->fullpath, str_lit(".odin"))) {
-		return ParseFile_WrongExtension;
-	}
+
+	//if (!string_ends_with(f->fullpath, str_lit(".odin"))) {
+	//	return ParseFile_WrongExtension;
+	//}
+
+
 	TokenizerInitError err = init_tokenizer(&f->tokenizer, f->fullpath);
 	if (err != TokenizerInit_None) {
 		switch (err) {
@@ -4768,11 +4811,43 @@ void destroy_parser(Parser *p) {
 	gb_mutex_destroy(&p->file_decl_mutex);
 }
 
+String add_helm_to_path(String path) {
+
+	if(path.len == 0) return (String){0, 0};
+
+	#if defined(GB_SYSTEM_WINDOWS)
+	#	define AHTP_IS_PATH_SEP(c) (c == '/' || c == '\\')
+	#else
+	#	define AHTP_IS_PATH_SEP(c) (c == '/')
+	#endif
+
+	bool has_extension = false;
+	for (isize i = path.len - 1; i > 0; i--) {
+		if(path[i] == '.') {
+
+			if(i == path.len - 1) break;
+
+			has_extension = true;
+			break;
+		} else if(AHTP_IS_PATH_SEP(path[i]) || path[i] == ':') {
+			break;
+		}
+	}
+
+	#undef AHTP_IS_PATH_SEP
+
+	if(!has_extension) {
+		return concatenate_strings(gb_heap_allocator(), path, STR_LIT(".helm")); // TODO(zachary): Leak!
+	}
+	return copy_string(gb_heap_allocator(), path);
+}
+
 // NOTE(bill): Returns true if it's added
 bool try_add_import_path(Parser *p, String path, String rel_path, TokenPos pos) {
 	if (build_context.generate_docs) {
 		return false;
 	}
+	
 
 	path = string_trim_whitespace(path);
 	rel_path = string_trim_whitespace(rel_path);
@@ -4880,7 +4955,7 @@ bool determine_path_from_string(Parser *p, AstNode *node, String base_dir, Strin
 	if (collection_name.len > 0) {
 		if (collection_name == "system") {
 			if (node->kind != AstNode_ForeignImportDecl) {
-				syntax_error(node, "The library collection 'system' is restrict for 'foreign_library'");
+				syntax_error(node, "The library collection 'system' is restricted for 'foreign_library'");
 				return false;
 			} else {
 				*path = file_str;
@@ -4906,9 +4981,13 @@ bool determine_path_from_string(Parser *p, AstNode *node, String base_dir, Strin
 		}
 #endif
 	}
+	
+	String fullpath = string_trim_whitespace(get_fullpath_relative(a, base_dir, add_helm_to_path(file_str))); // TODO(zachary): Leak!
+	*path = fullpath; 
 
-	String fullpath = string_trim_whitespace(get_fullpath_relative(a, base_dir, file_str));
-	*path = fullpath;
+
+
+	
 
 	return true;
 }
@@ -5049,9 +5128,6 @@ ParseFileError parse_import(Parser *p, ImportedFile imported_file) {
 		}
 		gb_printf_err("Failed to parse file: %.*s\n\t", LIT(import_rel_path));
 		switch (err) {
-		case ParseFile_WrongExtension:
-			gb_printf_err("Invalid file extension: File must have the extension '.odin'");
-			break;
 		case ParseFile_InvalidFile:
 			gb_printf_err("Invalid file or cannot be found");
 			break;
@@ -5110,13 +5186,13 @@ ParseFileError parse_files(Parser *p, String init_filename) {
 
 	isize shared_file_count = 0;
 	if (!build_context.generate_docs) {
-		String s = get_fullpath_core(heap_allocator(), str_lit("_preload.odin"));
+		String s = get_fullpath_core(heap_allocator(), str_lit("_preload.helm"));
 		ImportedFile runtime_file = {ImportedFile_Shared, s, s, init_pos};
 		array_add(&p->imports, runtime_file);
 		shared_file_count++;
 	}
 	if (!build_context.generate_docs) {
-		String s = get_fullpath_core(heap_allocator(), str_lit("_soft_numbers.odin"));
+		String s = get_fullpath_core(heap_allocator(), str_lit("_soft_numbers.helm"));
 		ImportedFile runtime_file = {ImportedFile_Shared, s, s, init_pos};
 		array_add(&p->imports, runtime_file);
 		shared_file_count++;

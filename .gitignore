@@ -261,13 +261,20 @@ bin/
 *.pdb
 
 # - Linux/MacOS
-odin
-odin.dSYM
+helm
+helm.dSYM
 
 
 # shared collection
 shared/
 
 # temp files
-* .ll
+*.ll
 *.bc
+
+examples/demo
+examples/demo.exe
+examples/factorial
+examples/factorial.exe
+examples/hello
+examples/hello.exe

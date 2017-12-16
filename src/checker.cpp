@@ -1851,6 +1851,7 @@ void check_procedure_overloading(Checker *c, Entity *e) {
 struct AttributeContext {
 	String  link_name;
 	String  link_prefix;
+	ProcCallingConvention cc = ProcCC_Invalid;
 	isize   init_expr_list_count;
 	String  thread_local_model;
 };
@@ -1913,6 +1914,18 @@ DECL_ATTRIBUTE_PROC(proc_decl_attribute) {
 			ac->link_prefix = value.value_string;
 			if (!is_foreign_name_valid(ac->link_prefix)) {
 				error(elem, "Invalid link prefix: %.*s", LIT(ac->link_prefix));
+			}
+		} else {
+			error(elem, "Expected a string value for '%.*s'", LIT(name));
+		}
+		return true;
+	} else if (name == "calling_convention" || name == "default_calling_convention") {
+		if (value.kind == ExactValue_String) {
+			auto cc = string_to_calling_convention(value.value_string);
+			if (cc == ProcCC_Invalid) {
+				error(elem, "Unknown procedure calling convention: '%.*s'\n", LIT(value.value_string));
+			} else {
+				ac->cc = cc;
 			}
 		} else {
 			error(elem, "Expected a string value for '%.*s'", LIT(name));

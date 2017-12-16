@@ -1,7 +1,7 @@
 @echo off
 
 :: Make sure this is a decent name and not generic
-set exe_name=odin.exe
+set exe_name=helm.exe
 
 :: Debug = 0, Release = 1
 set release_mode=0
@@ -43,8 +43,8 @@ del *.ilk > NUL 2> NUL
 
 cl %compiler_settings% "src\main.cpp" ^
 	/link %linker_settings% -OUT:%exe_name% ^
-	&& odin run examples/demo.odin -opt=0
-	rem && odin docs core/fmt.odin
+	&& helm run examples/demo.helm -opt=0
+	rem && helm docs core/fmt.helm
 
 del *.obj > NUL 2> NUL
 

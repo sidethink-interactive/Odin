@@ -1,9 +1,9 @@
 #shared_global_scope
 
-import "core:os.odin"
-import "core:fmt.odin" // TODO(bill): Remove the need for `fmt` here
-import "core:utf8.odin"
-import "core:raw.odin"
+import "core:os.helm"
+import "core:fmt.helm" // TODO(bill): Remove the need for `fmt` here
+import "core:utf8.helm"
+import "core:raw.helm"
 
 // Naming Conventions:
 // In general, Ada_Case for types and snake_case for values

@@ -1,27 +1,18 @@
-<img src="misc/logo-slim.png" alt="Odin logo" height="74">
+<img src="misc/logo.png" alt="Helm logo" height="74">
 
-# The Odin Programming Language
+# The Helm Programming Language
 
-The Odin programming language is fast, concise, readable, pragmatic and open sourced. It is designed with the intent of replacing C with the following goals:
-* simplicity
-* high performance
-* built for modern systems
-* joy of programming
-* metaprogramming
+Helm is a medium-level programming language that tries to be the sanity point between C and C++. Helm embraces standardization *and* choice, so that
+any Helm code should look similar to any other Helm code whilst allowing programmers to express code in whatever way is appropriate for the task at hand.
 
-Website: [https://odin.handmade.network/](https://odin.handmade.network/)
+Helm is one of those things where you can learn it extremely quickly, but there's always something new you can learn about it.
 
-## Demonstrations:
-* First Talk & Demo
-	- [Talk](https://youtu.be/TMCkT-uASaE?t=338)
-	- [Demo](https://youtu.be/TMCkT-uASaE?t=1800)
-	- [Q&A](https://youtu.be/TMCkT-uASaE?t=5749)
-* [Composition & Refactorability](https://www.youtube.com/watch?v=n1wemZfcbXM)
-* [Introspection, Modules, and Record Layout](https://www.youtube.com/watch?v=UFq8rhWhx4s)
-* [push_allocator & Minimal Dependency Building](https://www.youtube.com/watch?v=f_LGVOAMb78)
-* [when, for & procedure overloading](https://www.youtube.com/watch?v=OzeOekzyZK8)
-* [Context Types, Unexported Entities, Labelled Branches](https://www.youtube.com/watch?v=CkHVwT1Qk-g)
-* [Bit Fields, i128 & u128, Syntax Changes](https://www.youtube.com/watch?v=NlTutcLyF64)
+## This project is a fork of [Odin](https://github.com/odin-lang/Odin).
+Odin is a lower-level programming language attempting to replace C. Helm is building on Odin, attempting to create the C++ to Odin's C. That said,
+we don't want to make the same mistakes that C++ made. Convenience and complex features are fine, but not if they sacrifice the legibility of the code.
+
+If you're looking for something a little more low-level with less bells and whistles, definitely check out [Odin](https://github.com/odin-lang/Odin) and
+see if it's a better fit for your project!
 
 ## Requirements to build and run
 
@@ -41,7 +32,7 @@ Website: [https://odin.handmade.network/](https://odin.handmade.network/)
 	* x86-64
 	* Build tools (ld)
 	* LLVM installed
-	* Clang installed (temporary - this is Calling the linker for now)
+	* Clang installed (temporary - this is calling the linker for now)
 
 ## Warnings
 

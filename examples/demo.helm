@@ -1,0 +1,11 @@
+import "core:fmt"
+
+main :: () {
+    fmt.println("Working!", other_proc("a", "b"));
+}
+
+@(calling_convention = "c")
+other_proc :: (x, a: string) -> bool {
+    fmt.println("Other proc", x, a);
+    return 1 ≠ 1;
+}

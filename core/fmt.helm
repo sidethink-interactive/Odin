@@ -1,9 +1,9 @@
-import "core:os.odin"
-import "core:mem.odin"
-import "core:utf8.odin"
-import "core:types.odin"
-import "core:strconv.odin"
-import "core:raw.odin"
+import "core:os.helm"
+import "core:mem.helm"
+import "core:utf8.helm"
+import "core:types.helm"
+import "core:strconv.helm"
+import "core:raw.helm"
 
 
 _BUFFER_SIZE :: 1<<12;

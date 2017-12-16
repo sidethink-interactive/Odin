@@ -1,12 +1,12 @@
 when ODIN_OS == "windows" {
 	foreign import lib "system:opengl32.lib"
-	import win32 "core:sys/windows.odin"
-	import "core:sys/wgl.odin"
+	import win32 "core:sys/windows.helm"
+	import "core:sys/wgl.helm"
 } else when ODIN_OS == "linux" {
 	foreign import lib "system:gl"
 }
 
-export "core:opengl_constants.odin"
+export "core:opengl_constants.helm"
 
 _ := compile_assert(ODIN_OS != "osx");
 

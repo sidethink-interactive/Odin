@@ -555,6 +555,10 @@ void check_proc_decl(Checker *c, Entity *e, DeclInfo *d) {
 		e->Procedure.link_name = ac.link_name;
 	}
 
+	if (ac.cc != ProcCC_Invalid) {
+		e->type->Proc.calling_convention = ac.cc;
+	}
+
 	if (is_foreign) {
 		String name = e->token.string;
 		if (e->Procedure.link_name.len > 0) {

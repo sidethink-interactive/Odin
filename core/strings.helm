@@ -1,4 +1,4 @@
-import "core:mem.odin"
+import "core:mem.helm"
 
 new_string :: proc(s: string) -> string {
 	c := make([]byte, len(s)+1);

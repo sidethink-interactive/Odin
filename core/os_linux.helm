@@ -1,8 +1,8 @@
 foreign import dl   "system:dl"
 foreign import libc "system:c"
 
-import "core:strings.odin"
-import "core:mem.odin"
+import "core:strings.helm"
+import "core:mem.helm"
 
 Handle    :: i32;
 File_Time :: u64;
