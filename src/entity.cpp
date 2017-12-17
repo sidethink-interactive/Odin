@@ -10,7 +10,7 @@ struct DeclInfo;
 	ENTITY_KIND(Variable) \
 	ENTITY_KIND(TypeName) \
 	ENTITY_KIND(Procedure) \
-	ENTITY_KIND(ProcedureGrouping) \
+	ENTITY_KIND(ProcGroup) \
 	ENTITY_KIND(Builtin) \
 	ENTITY_KIND(Alias) \
 	ENTITY_KIND(ImportName) \
@@ -66,6 +66,7 @@ struct Entity {
 	Scope *    scope;
 	Type *     type;
 	AstNode *  identifier; // Can be nullptr
+	DeclInfo * decl_info;
 	DeclInfo * parent_proc_decl; // nullptr if in file/global scope
 
 	// TODO(bill): Cleanup how `using` works for entities
@@ -82,17 +83,17 @@ struct Entity {
 			i32        field_index;
 			i32        field_src_index;
 			ExactValue default_value;
-			bool       default_is_nil;
-			bool       default_is_undef;
-			bool       default_is_location;
-			bool       is_immutable;
-			String     thread_local_model;
-			bool       is_foreign;
-			bool       is_export;
 			Entity *   foreign_library;
 			AstNode *  foreign_library_ident;
 			String     link_name;
 			String     link_prefix;
+			String     thread_local_model;
+			bool       default_is_nil;
+			bool       default_is_undef;
+			bool       default_is_location;
+			bool       is_immutable;
+			bool       is_foreign;
+			bool       is_export;
 		} Variable;
 		struct {
 			bool  is_type_alias;
@@ -110,7 +111,7 @@ struct Entity {
 		} Procedure;
 		struct {
 			Array<Entity *> entities;
-		} ProcedureGrouping;
+		} ProcGroup;
 		struct {
 			i32 id;
 		} Builtin;
@@ -189,6 +190,7 @@ Entity *make_entity_using_variable(gbAllocator a, Entity *parent, Token token, T
 	entity->using_parent = parent;
 	entity->parent_proc_decl = parent->parent_proc_decl;
 	entity->flags |= EntityFlag_Using;
+	entity->flags |= EntityFlag_Used;
 	return entity;
 }
 
@@ -248,8 +250,8 @@ Entity *make_entity_procedure(gbAllocator a, Scope *scope, Token token, Type *si
 	return entity;
 }
 
-Entity *make_entity_procedure_grouping(gbAllocator a, Scope *scope, Token token, Type *type) {
-	Entity *entity = alloc_entity(a, Entity_ProcedureGrouping, scope, token, type);
+Entity *make_entity_proc_group(gbAllocator a, Scope *scope, Token token, Type *type) {
+	Entity *entity = alloc_entity(a, Entity_ProcGroup, scope, token, type);
 	return entity;
 }
 

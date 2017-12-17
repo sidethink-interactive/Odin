@@ -1,12 +1,10 @@
-#define ALLOW_ARRAY_PROGRAMMING
-// #define DISABLE_PROCEDURE_OVERLOADING
 // #define NO_ARRAY_BOUNDS_CHECK
-
 
 #include "common.cpp"
 #include "timings.cpp"
 #include "build_settings.cpp"
 #include "tokenizer.cpp"
+#include "exact_value.cpp"
 #include "parser.cpp"
 #include "docs.cpp"
 #include "checker.cpp"
@@ -249,6 +247,7 @@ bool parse_build_flags(Array<String> args) {
 	add_flag(&build_flags, BuildFlag_CrossLibDir,       str_lit("cross-lib-dir"),   BuildFlagParam_String);
 
 
+	GB_ASSERT(args.count >= 3);
 	Array<String> flag_args = args;
 	flag_args.data  += 3;
 	flag_args.count -= 3;
@@ -297,29 +296,13 @@ bool parse_build_flags(Array<String> args) {
 						switch (bf.param_kind) {
 						default: ok = false; break;
 						case BuildFlagParam_Boolean: {
-							if (param == "t") {
+							if (str_eq_ignore_case(param, str_lit("t")) ||
+							    str_eq_ignore_case(param, str_lit("true")) ||
+							    param == "1") {
 								value = exact_value_bool(true);
-							} else if (param == "T") {
-								value = exact_value_bool(true);
-							} else if (param == "true") {
-								value = exact_value_bool(true);
-							} else if (param == "TRUE") {
-								value = exact_value_bool(true);
-							} else if (param == "True") {
-								value = exact_value_bool(true);
-							} else if (param == "1") {
-								value = exact_value_bool(true);
-							} else if (param == "f") {
-								value = exact_value_bool(false);
-							} else if (param == "F") {
-								value = exact_value_bool(false);
-							} else if (param == "false") {
-								value = exact_value_bool(false);
-							} else if (param == "FALSE") {
-								value = exact_value_bool(false);
-							} else if (param == "False") {
-								value = exact_value_bool(false);
-							} else if (param == "0") {
+							} else if (str_eq_ignore_case(param, str_lit("f")) ||
+							           str_eq_ignore_case(param, str_lit("false")) ||
+							           param == "0") {
 								value = exact_value_bool(false);
 							} else {
 								gb_printf_err("Invalid flag parameter for '%.*s' = '%.*s'\n", LIT(name), LIT(param));

@@ -102,6 +102,7 @@ TOKEN_KIND(Token__KeywordBegin, "_KeywordBegin"), \
 	TOKEN_KIND(Token_proc,                   "proc"),                   \
 	TOKEN_KIND(Token_macro,                  "macro"),                  \
 	TOKEN_KIND(Token_struct,                 "struct"),                 \
+	TOKEN_KIND(Token_class,                  "class"),                  \
 	TOKEN_KIND(Token_union,                  "union"),                  \
 	TOKEN_KIND(Token_enum,                   "enum"),                   \
 	TOKEN_KIND(Token_bit_field,              "bit_field"),              \
@@ -119,6 +120,7 @@ TOKEN_KIND(Token__KeywordBegin, "_KeywordBegin"), \
 	TOKEN_KIND(Token_offset_of,              "offset_of"),              \
 	TOKEN_KIND(Token_type_of,                "type_of"),                \
 	TOKEN_KIND(Token_type_info_of,           "type_info_of"),           \
+	TOKEN_KIND(Token_const,                  "const"),                  \
 	TOKEN_KIND(Token_asm,                    "asm"),                    \
 	TOKEN_KIND(Token_yield,                  "yield"),                  \
 	TOKEN_KIND(Token_await,                  "await"),                  \

@@ -80,7 +80,6 @@ struct TypeStruct {
 	bool       are_offsets_set;
 	bool       are_offsets_being_processed;
 	bool       is_packed;
-	bool       is_ordered;
 	bool       is_raw_union;
 	bool       is_polymorphic;
 	bool       is_poly_specialized;
@@ -163,6 +162,7 @@ struct TypeStruct {
 		Type * value;                                     \
 		Type * entry_type;                                \
 		Type * generated_struct_type;                     \
+		Type * internal_type;                             \
 		Type * lookup_result_type;                        \
 	})                                                    \
 	TYPE_KIND(BitFieldValue, struct { u32 bits; })        \
@@ -659,11 +659,9 @@ bool is_type_numeric(Type *t) {
 		return (t->Basic.flags & BasicFlag_Numeric) != 0;
 	}
 	// TODO(bill): Should this be here?
-#if defined(ALLOW_ARRAY_PROGRAMMING)
 	if (t->kind == Type_Array) {
 		return is_type_numeric(t->Array.elem);
 	}
-#endif
 	return false;
 }
 bool is_type_string(Type *t) {
@@ -1179,7 +1177,6 @@ bool are_types_identical(Type *x, Type *y) {
 			if (x->Struct.is_raw_union == y->Struct.is_raw_union &&
 			    x->Struct.fields.count == y->Struct.fields.count &&
 			    x->Struct.is_packed    == y->Struct.is_packed &&
-			    x->Struct.is_ordered   == y->Struct.is_ordered &&
 			    x->Struct.custom_align == y->Struct.custom_align) {
 				// TODO(bill); Fix the custom alignment rule
 				for_array(i, x->Struct.fields) {
@@ -1369,10 +1366,10 @@ i64 union_tag_size(gbAllocator a, Type *u) {
 		return u->Union.tag_size;
 	}
 
-	i64 tag_size = type_align_of(a, u);
-	if (tag_size < 1) {
-		tag_size = build_context.word_size;
-	}
+	u64 n = cast(u64)u->Union.variants.count;
+	i64 bytes = next_pow2(cast(i64)(floor_log2(n)/8 + 1));
+	i64 tag_size = gb_max(bytes, 1);
+
 	u->Union.tag_size = tag_size;
 	return tag_size;
 }
@@ -1387,7 +1384,7 @@ Type *union_tag_type(gbAllocator a, Type *u) {
 	case 16: return t_u128;
 	}
 	GB_PANIC("Invalid union_tag_size");
-	return t_int;
+	return t_uint;
 }
 
 
@@ -1874,7 +1871,8 @@ i64 type_align_of_internal(gbAllocator allocator, Type *t, TypePath *path) {
 
 	case Type_Map:
 		generate_map_internal_types(allocator, t);
-		return type_align_of_internal(allocator, t->Map.generated_struct_type, path);
+		// return type_align_of_internal(allocator, t->Map.generated_struct_type, path);
+		return build_context.word_size;
 
 	case Type_Enum:
 		return type_align_of_internal(allocator, t->Enum.base_type, path);
@@ -1973,8 +1971,9 @@ Array<i64> type_set_offsets_of(gbAllocator allocator, Array<Entity *> fields, bo
 		}
 	} else {
 		for_array(i, fields) {
-			i64 align = gb_max(type_align_of(allocator, fields[i]->type), 1);
-			i64 size  = gb_max(type_size_of(allocator, fields[i]->type), 0);
+			Type *t = fields[i]->type;
+			i64 align = gb_max(type_align_of(allocator, t), 1);
+			i64 size  = gb_max(type_size_of(allocator,  t), 0);
 			curr_offset = align_formula(curr_offset, align);
 			offsets[i] = curr_offset;
 			curr_offset += size;
@@ -1989,6 +1988,7 @@ bool type_set_offsets(gbAllocator allocator, Type *t) {
 		if (!t->Struct.are_offsets_set) {
 			t->Struct.are_offsets_being_processed = true;
 			t->Struct.offsets = type_set_offsets_of(allocator, t->Struct.fields, t->Struct.is_packed, t->Struct.is_raw_union);
+			t->Struct.are_offsets_being_processed = false;
 			t->Struct.are_offsets_set = true;
 			return true;
 		}
@@ -1996,6 +1996,7 @@ bool type_set_offsets(gbAllocator allocator, Type *t) {
 		if (!t->Tuple.are_offsets_set) {
 			t->Struct.are_offsets_being_processed = true;
 			t->Tuple.offsets = type_set_offsets_of(allocator, t->Tuple.variables, false, false);
+			t->Struct.are_offsets_being_processed = false;
 			t->Tuple.are_offsets_set = true;
 			return true;
 		}
@@ -2037,6 +2038,9 @@ i64 type_size_of_internal(gbAllocator allocator, Type *t, TypePath *path) {
 		}
 	} break;
 
+	case Type_Pointer:
+		return build_context.word_size;
+
 	case Type_Array: {
 		i64 count, align, size, alignment;
 		count = t->Array.count;
@@ -2061,7 +2065,8 @@ i64 type_size_of_internal(gbAllocator allocator, Type *t, TypePath *path) {
 
 	case Type_Map:
 		generate_map_internal_types(allocator, t);
-		return type_size_of_internal(allocator, t->Map.generated_struct_type, path);
+		// return type_size_of_internal(allocator, t->Map.generated_struct_type, path);
+		return build_context.word_size;
 
 	case Type_Tuple: {
 		i64 count, align, size;
@@ -2099,15 +2104,13 @@ i64 type_size_of_internal(gbAllocator allocator, Type *t, TypePath *path) {
 		}
 
 		// NOTE(bill): Align to tag
-		i64 tag_size = gb_max(align, 1);
+		i64 tag_size = union_tag_size(allocator, t);
 		i64 size = align_formula(max, tag_size);
 		// NOTE(bill): Calculate the padding between the common fields and the tag
 		t->Union.tag_size = tag_size;
 		t->Union.variant_block_size = size - field_size;
 
-		size += tag_size;
-		size = align_formula(size, align);
-		return size;
+		return align_formula(size + tag_size, align);
 	} break;
 
 
@@ -2128,11 +2131,13 @@ i64 type_size_of_internal(gbAllocator allocator, Type *t, TypePath *path) {
 			// TODO(bill): Is this how it should work?
 			return align_formula(max, align);
 		} else {
-			i64 count = t->Struct.fields.count;
+			i64 count = 0, size = 0, align = 0;
+
+			count = t->Struct.fields.count;
 			if (count == 0) {
 				return 0;
 			}
-			i64 align = type_align_of_internal(allocator, t, path);
+			align = type_align_of_internal(allocator, t, path);
 			if (path->failure) {
 				return FAILURE_SIZE;
 			}
@@ -2141,7 +2146,7 @@ i64 type_size_of_internal(gbAllocator allocator, Type *t, TypePath *path) {
 				return FAILURE_SIZE;
 			}
 			type_set_offsets(allocator, t);
-			i64 size = t->Struct.offsets[count-1] + type_size_of_internal(allocator, t->Struct.fields[count-1]->type, path);
+			size = t->Struct.offsets[count-1] + type_size_of_internal(allocator, t->Struct.fields[count-1]->type, path);
 			return align_formula(size, align);
 		}
 	} break;
@@ -2334,7 +2339,6 @@ gbString write_type_to_string(gbString str, Type *type) {
 	case Type_Struct: {
 			str = gb_string_appendc(str, "struct");
 		if (type->Struct.is_packed)    str = gb_string_appendc(str, " #packed");
-		if (type->Struct.is_ordered)   str = gb_string_appendc(str, " #ordered");
 		if (type->Struct.is_raw_union) str = gb_string_appendc(str, " #raw_union");
 		str = gb_string_appendc(str, " {");
 		for_array(i, type->Struct.fields) {

@@ -234,7 +234,6 @@ write_type :: proc(buf: ^String_Buffer, ti: ^Type_Info) {
 
 	case Type_Info_Array:
 		write_string(buf, "[");
-		fi := Fmt_Info{buf = buf};
 		write_i64(buf, i64(info.count), 10);
 		write_string(buf, "]");
 		write_type(buf, info.elem);
@@ -254,7 +253,6 @@ write_type :: proc(buf: ^String_Buffer, ti: ^Type_Info) {
 	case Type_Info_Struct:
 		write_string(buf, "struct ");
 		if info.is_packed    do write_string(buf, "#packed ");
-		if info.is_ordered   do write_string(buf, "#ordered ");
 		if info.is_raw_union do write_string(buf, "#raw_union ");
 		if info.custom_align {
 			write_string(buf, "#align ");
@@ -313,8 +311,6 @@ _parse_int :: proc(s: string, offset: int) -> (result: int, offset: int, ok: boo
 	}
 
 	result := 0;
-	ok := true;
-
 	i := 0;
 	for i < len(s[offset..]) {
 		c := rune(s[offset+i]);
@@ -819,32 +815,32 @@ fmt_value :: proc(fi: ^Fmt_Info, v: any, verb: rune) {
 		write_string(fi.buf, "map[");
 		defer write_byte(fi.buf, ']');
 
-		entries    := &(^raw.Map)(v.data).entries;
-		gs         := type_info_base(info.generated_struct).variant.(Type_Info_Struct);
-		ed         := type_info_base(gs.types[1]).variant.(Type_Info_Dynamic_Array);
-		entry_type := ed.elem.variant.(Type_Info_Struct);
-		entry_size := ed.elem_size;
+		if (^raw.Map)(v.data).internal != nil {
+			entries    := &(^raw.Map)(v.data).entries;
+			gs         := type_info_base(info.generated_struct).variant.(Type_Info_Struct);
+			ed         := type_info_base(gs.types[1]).variant.(Type_Info_Dynamic_Array);
+			entry_type := ed.elem.variant.(Type_Info_Struct);
+			entry_size := ed.elem_size;
 
-		for i in 0..entries.len {
-			if i > 0 do write_string(fi.buf, ", ");
+			for i in 0..entries.len {
+				if i > 0 do write_string(fi.buf, ", ");
 
-			data := uintptr(entries.data) + uintptr(i*entry_size);
-			header := cast(^__Map_Entry_Header)data;
+				data := uintptr(entries.data) + uintptr(i*entry_size);
+				header := cast(^__Map_Entry_Header)data;
 
-			if types.is_string(info.key) {
-				write_string(fi.buf, header.key.str);
-			} else {
-				fi := Fmt_Info{buf = fi.buf};
-				fmt_arg(&fi, any{rawptr(&header.key.hash), info.key}, 'v');
+				if types.is_string(info.key) {
+					write_string(fi.buf, header.key.str);
+				} else {
+					fi := Fmt_Info{buf = fi.buf};
+					fmt_arg(&fi, any{rawptr(&header.key.hash), info.key}, 'v');
+				}
+
+				write_string(fi.buf, "=");
+
+				value := data + entry_type.offsets[2];
+				fmt_arg(fi, any{rawptr(value), info.value}, 'v');
 			}
-
-			write_string(fi.buf, "=");
-
-			value := data + entry_type.offsets[2];
-			fmt_arg(fi, any{rawptr(value), info.value}, 'v');
 		}
-
-
 
 	case Type_Info_Struct:
 		if info.is_raw_union {
@@ -855,11 +851,10 @@ fmt_value :: proc(fi: ^Fmt_Info, v: any, verb: rune) {
 		write_byte(fi.buf, '{');
 		defer write_byte(fi.buf, '}');
 
-		hash   := fi.hash;   defer fi.hash = hash;
-		indent := fi.indent; defer fi.indent -= 1;
-
+		fi.indent += 1;  defer fi.indent -= 1;
+		hash := fi.hash; defer fi.hash = hash;
 		fi.hash = false;
-		fi.indent += 1;
+
 
 		if hash	do write_byte(fi.buf, '\n');
 
@@ -913,9 +908,14 @@ fmt_value :: proc(fi: ^Fmt_Info, v: any, verb: rune) {
 		fmt_enum(fi, v, verb);
 
 	case Type_Info_Procedure:
-		write_type(fi.buf, v.type_info);
-		write_string(fi.buf, " @ ");
-		fmt_pointer(fi, (^rawptr)(v.data)^, 'p');
+		ptr := (^rawptr)(v.data)^;
+		if ptr == nil {
+			write_string(fi.buf, "nil");
+		} else {
+			write_type(fi.buf, v.type_info);
+			write_string(fi.buf, " @ ");
+			fmt_pointer(fi, ptr, 'p');
+		}
 	}
 }
 
@@ -1016,7 +1016,7 @@ sbprintln :: proc(buf: ^String_Buffer, args: ...any) -> string {
 	fi: Fmt_Info;
 	fi.buf = buf;
 
-	for arg, i in args {
+	for _, i in args {
 		if i > 0 do write_byte(buf, ' ');
 
 		fmt_value(&fi, args[i], 'v');
