@@ -23,12 +23,12 @@ import "core:raw.helm"
 
 // NOTE(bill): This must match the compiler's
 Calling_Convention :: enum {
-	Invalid         = 0,
-	Odin            = 1,
-	Contextless     = 2,
-	C               = 3,
-	Std             = 4,
-	Fast            = 5,
+	Invalid     = 0,
+	Odin        = 1,
+	Contextless = 2,
+	C           = 3,
+	Std         = 4,
+	Fast        = 5,
 }
 // IMPORTANT NOTE(bill): Do not change the order of any of this data
 // The compiler relies upon this _exact_ order
@@ -42,67 +42,66 @@ Type_Info_Enum_Value :: union {
 };
 
 // Variant Types
-Type_Info_Named   :: struct #ordered {name: string, base: ^Type_Info};
-Type_Info_Integer :: struct #ordered {signed: bool};
+Type_Info_Named   :: struct {name: string, base: ^Type_Info};
+Type_Info_Integer :: struct {signed: bool};
 Type_Info_Rune    :: struct{};
 Type_Info_Float   :: struct{};
 Type_Info_Complex :: struct{};
 Type_Info_String  :: struct{};
 Type_Info_Boolean :: struct{};
 Type_Info_Any     :: struct{};
-Type_Info_Pointer :: struct #ordered {
+Type_Info_Pointer :: struct {
 	elem: ^Type_Info // nil -> rawptr
 };
-Type_Info_Procedure :: struct #ordered {
+Type_Info_Procedure :: struct {
 	params:     ^Type_Info, // Type_Info_Tuple
 	results:    ^Type_Info, // Type_Info_Tuple
 	variadic:   bool,
 	convention: Calling_Convention,
 };
-Type_Info_Array :: struct #ordered {
+Type_Info_Array :: struct {
 	elem:      ^Type_Info,
 	elem_size: int,
 	count:     int,
 };
-Type_Info_Dynamic_Array :: struct #ordered {elem: ^Type_Info, elem_size: int};
-Type_Info_Slice         :: struct #ordered {elem: ^Type_Info, elem_size: int};
-Type_Info_Tuple :: struct #ordered { // Only really used for procedures
+Type_Info_Dynamic_Array :: struct {elem: ^Type_Info, elem_size: int};
+Type_Info_Slice         :: struct {elem: ^Type_Info, elem_size: int};
+Type_Info_Tuple :: struct { // Only really used for procedures
 	types:        []^Type_Info,
 	names:        []string,
 };
-Type_Info_Struct :: struct #ordered {
+Type_Info_Struct :: struct {
 	types:        []^Type_Info,
 	names:        []string,
 	offsets:      []uintptr, // offsets may not be used in tuples
 	usings:       []bool,    // usings may not be used in tuples
 	is_packed:    bool,
-	is_ordered:   bool,
 	is_raw_union: bool,
 	custom_align: bool,
 };
-Type_Info_Union :: struct #ordered {
+Type_Info_Union :: struct {
 	variants:   []^Type_Info,
 	tag_offset: uintptr,
 	tag_type:   ^Type_Info,
 };
-Type_Info_Enum :: struct #ordered {
+Type_Info_Enum :: struct {
 	base:   ^Type_Info,
 	names:  []string,
 	values: []Type_Info_Enum_Value,
 };
-Type_Info_Map :: struct #ordered {
+Type_Info_Map :: struct {
 	key:              ^Type_Info,
 	value:            ^Type_Info,
 	generated_struct: ^Type_Info,
 };
-Type_Info_Bit_Field :: struct #ordered {
+Type_Info_Bit_Field :: struct {
 	names:   []string,
 	bits:    []i32,
 	offsets: []i32,
 };
 
 
-Type_Info :: struct #ordered {
+Type_Info :: struct {
 	size:  int,
 	align: int,
 
@@ -139,7 +138,7 @@ __argv__: ^^byte;
 // IMPORTANT NOTE(bill): Must be in this order (as the compiler relies upon it)
 
 
-Source_Code_Location :: struct #ordered {
+Source_Code_Location :: struct {
 	file_path:    string,
 	line, column: int,
 	procedure:    string,
@@ -160,19 +159,20 @@ Allocator_Proc :: #type proc(allocator_data: rawptr, mode: Allocator_Mode,
 	                         old_memory: rawptr, old_size: int, flags: u64 = 0, location := #caller_location) -> rawptr;
 
 
-Allocator :: struct #ordered {
+Allocator :: struct {
 	procedure: Allocator_Proc,
 	data:      rawptr,
 }
 
 
-Context :: struct #ordered {
+Context :: struct {
 	allocator:  Allocator,
 	thread_id:  int,
 
 	user_data:  any,
 	user_index: int,
 
+	parent:     ^Context,
 	derived:    any, // May be used for derived data types
 }
 
@@ -180,18 +180,18 @@ DEFAULT_ALIGNMENT :: 2*align_of(rawptr);
 
 __INITIAL_MAP_CAP :: 16;
 
-__Map_Key :: struct #ordered {
+__Map_Key :: struct {
 	hash: u128,
 	str:  string,
 }
 
-__Map_Find_Result :: struct #ordered {
+__Map_Find_Result :: struct {
 	hash_index:  int,
 	entry_prev:  int,
 	entry_index: int,
 }
 
-__Map_Entry_Header :: struct #ordered {
+__Map_Entry_Header :: struct {
 	key:  __Map_Key,
 	next: int,
 /*
@@ -199,7 +199,7 @@ __Map_Entry_Header :: struct #ordered {
 */
 }
 
-__Map_Header :: struct #ordered {
+__Map_Header :: struct {
 	m:             ^raw.Map,
 	is_key_string: bool,
 	entry_size:    int,
@@ -240,18 +240,19 @@ type_info_base_without_enum :: proc(info: ^Type_Info) -> ^Type_Info {
 
 
 
+@(default_calling_convention = "c")
 foreign __llvm_core {
 	@(link_name="llvm.assume")
-	assume :: proc "c" (cond: bool) ---;
+	assume :: proc(cond: bool) ---;
 
 	@(link_name="llvm.debugtrap")
-	__debug_trap :: proc "c" () ---;
+	__debug_trap :: proc() ---;
 
 	@(link_name="llvm.trap")
-	__trap :: proc "c" () ---;
+	__trap :: proc() ---;
 
 	@(link_name="llvm.readcyclecounter")
-	read_cycle_counter :: proc "c" () -> u64 ---;
+	read_cycle_counter :: proc() -> u64 ---;
 }
 
 
@@ -477,18 +478,22 @@ new_clone :: inline proc(data: $T, loc := #caller_location) -> ^T {
 }
 
 free_string :: proc(str: string, loc := #caller_location) {
-	free_ptr((^raw.String)(&str).data, loc);
+	free_ptr(raw.data(str), loc);
 }
 free_dynamic_array :: proc(array: $T/[dynamic]$E, loc := #caller_location) {
-	free_ptr((^raw.Dynamic_Array)(&array).data, loc);
+	free_ptr(raw.data(array), loc);
 }
 free_slice :: proc(array: $T/[]$E, loc := #caller_location) {
-	free_ptr((^raw.Slice)(&array).data, loc);
+	free_ptr(raw.data(array), loc);
 }
 free_map :: proc(m: $T/map[$K]$V, loc := #caller_location) {
-	raw := cast(^raw.Map)&m;
-	free_dynamic_array(raw.hashes, loc);
-	free_ptr(raw.entries.data, loc);
+	raw := transmute(raw.Map)m;
+	if raw.internal != nil {
+		free_dynamic_array(raw.hashes, loc);
+		free_ptr(raw.entries.data, loc);
+		free_ptr(raw.internal, loc);
+		raw.internal = nil;
+	}
 }
 
 free :: proc[
@@ -776,6 +781,7 @@ __mem_compare :: proc "contextless" (a, b: ^byte, n: int) -> int {
 	return 0;
 }
 
+@(default_calling_convention = "c")
 foreign __llvm_core {
 	@(link_name="llvm.sqrt.f32") __sqrt_f32 :: proc(x: f32) -> f32 ---;
 	@(link_name="llvm.sqrt.f64") __sqrt_f64 :: proc(x: f64) -> f64 ---;
@@ -791,6 +797,14 @@ foreign __llvm_core {
 
 	@(link_name="llvm.fmuladd.f32") fmuladd32  :: proc(a, b, c: f32) -> f32 ---;
 	@(link_name="llvm.fmuladd.f64") fmuladd64  :: proc(a, b, c: f64) -> f64 ---;
+
+	@(link_name="llvm.fabs.f32") __abs_f32 :: proc(x: f32) -> f32 ---;
+	@(link_name="llvm.fabs.f64") __abs_f64 :: proc(x: f64) -> f32 ---;
+
+	@(link_name="llvm.minnum.f32") __min_f32 :: proc(a, b: f32) -> f32 ---;
+	@(link_name="llvm.minnum.f64") __min_f64 :: proc(a, b: f64) -> f32 ---;
+	@(link_name="llvm.maxnum.f32") __max_f32 :: proc(a, b: f32) -> f32 ---;
+	@(link_name="llvm.maxnum.f64") __max_f64 :: proc(a, b: f64) -> f32 ---;
 }
 __abs_complex64 :: inline proc "contextless" (x: complex64) -> f32 {
 	r, i := real(x), imag(x);
@@ -901,14 +915,22 @@ __default_hash :: proc(data: []byte) -> u128 {
 }
 __default_hash_string :: proc(s: string) -> u128 do return __default_hash(cast([]byte)s);
 
+__dynamic_map_check_init :: proc(h: __Map_Header) {
+	if h.m.internal == nil {
+		h.m.internal = new(raw.Map_Internal);
+	}
+}
+
 __dynamic_map_reserve :: proc(using header: __Map_Header, cap: int, loc := #caller_location)  {
+	__dynamic_map_check_init(header);
 	__dynamic_array_reserve(&m.hashes, size_of(int), align_of(int), cap, loc);
 	__dynamic_array_reserve(&m.entries, entry_size, entry_align,    cap, loc);
 }
-
 __dynamic_map_rehash :: proc(using header: __Map_Header, new_count: int, loc := #caller_location) {
+	__dynamic_map_check_init(header);
 	new_header: __Map_Header = header;
 	nm: raw.Map;
+	nm.internal = new(raw.Map_Internal);
 	new_header.m = &nm;
 
 	header_hashes := cast(^raw.Dynamic_Array)&header.m.hashes;
@@ -946,6 +968,7 @@ __dynamic_map_rehash :: proc(using header: __Map_Header, new_count: int, loc := 
 }
 
 __dynamic_map_get :: proc(h: __Map_Header, key: __Map_Key) -> rawptr {
+	__dynamic_map_check_init(h);
 	index := __dynamic_map_find(h, key).entry_index;
 	if index >= 0 {
 		data := cast(^byte)__dynamic_map_get_entry(h, index);
@@ -954,11 +977,13 @@ __dynamic_map_get :: proc(h: __Map_Header, key: __Map_Key) -> rawptr {
 	return nil;
 }
 
-__dynamic_map_set :: proc(using h: __Map_Header, key: __Map_Key, value: rawptr, loc := #caller_location) {
+__dynamic_map_set :: proc(h: __Map_Header, key: __Map_Key, value: rawptr, loc := #caller_location) {
+	__dynamic_map_check_init(h);
+
 	index: int;
 	assert(value != nil);
 
-	if len(m.hashes) == 0 {
+	if len(h.m.hashes) == 0 {
 		__dynamic_map_reserve(h, __INITIAL_MAP_CAP, loc);
 		__dynamic_map_grow(h, loc);
 	}
@@ -972,14 +997,14 @@ __dynamic_map_set :: proc(using h: __Map_Header, key: __Map_Key, value: rawptr, 
 			entry := __dynamic_map_get_entry(h, fr.entry_prev);
 			entry.next = index;
 		} else {
-			m.hashes[fr.hash_index] = index;
+			h.m.hashes[fr.hash_index] = index;
 		}
 	}
 	{
 		e := __dynamic_map_get_entry(h, index);
 		e.key = key;
-		val := cast(^byte)e + value_offset;
-		__mem_copy(val, value, value_size);
+		val := cast(^byte)(uintptr(e) + h.value_offset);
+		__mem_copy(val, value, h.value_size);
 	}
 
 	if __dynamic_map_full(h) {
@@ -989,11 +1014,13 @@ __dynamic_map_set :: proc(using h: __Map_Header, key: __Map_Key, value: rawptr, 
 
 
 __dynamic_map_grow :: proc(using h: __Map_Header, loc := #caller_location) {
+	__dynamic_map_check_init(h);
 	new_count := max(2*m.entries.cap + 8, __INITIAL_MAP_CAP);
 	__dynamic_map_rehash(h, new_count, loc);
 }
 
 __dynamic_map_full :: inline proc(using h: __Map_Header) -> bool {
+	__dynamic_map_check_init(h);
 	return int(0.75 * f64(len(m.hashes))) <= m.entries.cap;
 }
 
@@ -1007,6 +1034,7 @@ __dynamic_map_hash_equal :: proc(h: __Map_Header, a, b: __Map_Key) -> bool {
 }
 
 __dynamic_map_find :: proc(using h: __Map_Header, key: __Map_Key) -> __Map_Find_Result {
+	__dynamic_map_check_init(h);
 	fr := __Map_Find_Result{-1, -1, -1};
 	if len(m.hashes) > 0 {
 		fr.hash_index = int(key.hash % u128(len(m.hashes)));
@@ -1022,6 +1050,7 @@ __dynamic_map_find :: proc(using h: __Map_Header, key: __Map_Key) -> __Map_Find_
 }
 
 __dynamic_map_add_entry :: proc(using h: __Map_Header, key: __Map_Key, loc := #caller_location) -> int {
+	__dynamic_map_check_init(h);
 	prev := m.entries.len;
 	c := __dynamic_array_append_nothing(&m.entries, entry_size, entry_align, loc);
 	if c != prev {
@@ -1033,6 +1062,7 @@ __dynamic_map_add_entry :: proc(using h: __Map_Header, key: __Map_Key, loc := #c
 }
 
 __dynamic_map_delete :: proc(using h: __Map_Header, key: __Map_Key) {
+	__dynamic_map_check_init(h);
 	fr := __dynamic_map_find(h, key);
 	if fr.entry_index >= 0 {
 		__dynamic_map_erase(h, fr);
@@ -1040,10 +1070,13 @@ __dynamic_map_delete :: proc(using h: __Map_Header, key: __Map_Key) {
 }
 
 __dynamic_map_get_entry :: proc(using h: __Map_Header, index: int) -> ^__Map_Entry_Header {
+	__dynamic_map_check_init(h);
+	assert(0 <= index && index < m.entries.len);
 	return cast(^__Map_Entry_Header)(cast(^byte)m.entries.data + index*entry_size);
 }
 
 __dynamic_map_erase :: proc(using h: __Map_Header, fr: __Map_Find_Result) {
+	__dynamic_map_check_init(h);
 	if fr.entry_prev < 0 {
 		m.hashes[fr.hash_index] = __dynamic_map_get_entry(h, fr.entry_index).next;
 	} else {
@@ -1060,4 +1093,8 @@ __dynamic_map_erase :: proc(using h: __Map_Header, fr: __Map_Find_Result) {
 	} else {
 		m.hashes[last.hash_index] = fr.entry_index;
 	}
+}
+
+__map_for_test :: proc "c" (s: string) {
+	fmt.printf("__map_for_test '%s'\n", s);
 }

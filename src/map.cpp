@@ -2,6 +2,8 @@
 // with the use of the `multi_*` procedures.
 // TODO(bill): I should probably allow the `multi_map_*` stuff to be #ifdefed out
 
+#define MAP_ENABLE_MULTI_MAP 1
+
 #ifndef MAP_UTIL_STUFF
 #define MAP_UTIL_STUFF
 // NOTE(bill): This util stuff is the same for every `Map`
@@ -110,6 +112,7 @@ template <typename T> void map_clear            (Map<T> *h);
 template <typename T> void map_grow             (Map<T> *h);
 template <typename T> void map_rehash           (Map<T> *h, isize new_count);
 
+#if MAP_ENABLE_MULTI_MAP
 // Mutlivalued map procedure
 template <typename T> MapEntry<T> * multi_map_find_first(Map<T> *h, HashKey key);
 template <typename T> MapEntry<T> * multi_map_find_next (Map<T> *h, MapEntry<T> *e);
@@ -119,19 +122,17 @@ template <typename T> void  multi_map_get_all   (Map<T> *h, HashKey key, T *item
 template <typename T> void  multi_map_insert    (Map<T> *h, HashKey key, T const &value);
 template <typename T> void  multi_map_remove    (Map<T> *h, HashKey key, MapEntry<T> *e);
 template <typename T> void  multi_map_remove_all(Map<T> *h, HashKey key);
-
+#endif
 
 template <typename T>
 gb_inline void map_init(Map<T> *h, gbAllocator a, isize capacity) {
 	array_init(&h->hashes,  a, capacity);
-	array_init(&h->entries, a, capacity);
-}
+	array_init(&h->entries, a, capacity);}
 
 template <typename T>
 gb_inline void map_destroy(Map<T> *h) {
 	array_free(&h->entries);
-	array_free(&h->hashes);
-}
+	array_free(&h->hashes);}
 
 template <typename T>
 gb_internal isize map__add_entry(Map<T> *h, HashKey key) {
@@ -182,9 +183,12 @@ gb_internal b32 map__full(Map<T> *h) {
 	return 0.75f * h->hashes.count <= h->entries.count;
 }
 
+#define MAP_ARRAY_GROW_FORMULA(x) (4*(x) + 7)
+GB_STATIC_ASSERT(MAP_ARRAY_GROW_FORMULA(0) > 0);
+
 template <typename T>
 gb_inline void map_grow(Map<T> *h) {
-	isize new_count = ARRAY_GROW_FORMULA(h->entries.count);
+	isize new_count = MAP_ARRAY_GROW_FORMULA(h->entries.count);
 	map_rehash(h, new_count);
 }
 
@@ -234,8 +238,9 @@ template <typename T>
 void map_set(Map<T> *h, HashKey key, T const &value) {
 	isize index;
 	MapFindResult fr;
-	if (h->hashes.count == 0)
+	if (h->hashes.count == 0) {
 		map_grow(h);
+	}
 	fr = map__find(h, key);
 	if (fr.entry_index >= 0) {
 		index = fr.entry_index;
@@ -291,7 +296,7 @@ gb_inline void map_clear(Map<T> *h) {
 }
 
 
-#if 1
+#if MAP_ENABLE_MULTI_MAP
 template <typename T>
 MapEntry<T> *multi_map_find_first(Map<T> *h, HashKey key) {
 	isize i = map__find(h, key).entry_index;

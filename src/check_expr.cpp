@@ -127,14 +127,6 @@ void check_scope_decls(Checker *c, Array<AstNode *> nodes, isize reserve_size) {
 			check_entity_decl(c, e, d, nullptr);
 		}
 	}
-
-	for_array(i, s->elements.entries) {
-		Entity *e = s->elements.entries[i].value;
-		if (e->kind != Entity_Procedure) {
-			continue;
-		}
-		check_procedure_overloading(c, e);
-	}
 }
 
 
@@ -275,6 +267,8 @@ bool find_or_generate_polymorphic_procedure(Checker *c, Entity *base_entity, Typ
 	}
 
 
+	gb_mutex_lock(&c->mutex);
+	defer (gb_mutex_unlock(&c->mutex));
 
 	auto *found_gen_procs = map_get(&c->info.gen_procs, hash_pointer(base_entity->identifier));
 	if (found_gen_procs) {
@@ -561,7 +555,6 @@ i64 check_distance_between_types(Checker *c, Operand *operand, Type *type) {
 		}
 	}
 
-#if defined(ALLOW_ARRAY_PROGRAMMING)
 	if (is_type_array(dst)) {
 		Type *elem = base_array_type(dst);
 		i64 distance = check_distance_between_types(c, operand, elem);
@@ -569,7 +562,6 @@ i64 check_distance_between_types(Checker *c, Operand *operand, Type *type) {
 			return distance + 6;
 		}
 	}
-#endif
 
 	if (is_type_any(dst)) {
 		if (!is_type_polymorphic(src)) {
@@ -659,18 +651,16 @@ void check_assignment(Checker *c, Operand *operand, Type *type, String context_n
 		return;
 	}
 
-	if (operand->mode == Addressing_Overload) {
+	if (operand->mode == Addressing_ProcGroup) {
 		// GB_PANIC("HERE!\n");
 
 		gbTempArenaMemory tmp = gb_temp_arena_memory_begin(&c->tmp_arena);
 		defer (gb_temp_arena_memory_end(tmp));
 
-		Entity **procs = operand->overload_entities;
-		isize overload_count = operand->overload_count;
-
+		Array<Entity *> procs = proc_group_entities(c, *operand);
 		bool good = false;
 		// NOTE(bill): These should be done
-		for (isize i = 0; i < overload_count; i++) {
+		for_array(i, procs) {
 			Type *t = base_type(procs[i]->type);
 			if (t == t_invalid) {
 				continue;
@@ -783,7 +773,10 @@ bool is_polymorphic_type_assignable(Checker *c, Type *poly, Type *source, bool c
 		return false;
 	case Type_Array:
 		if (source->kind == Type_Array) {
-			if (poly->Array.generic_type && modify_type) {
+
+			// IMPORTANT TODO(bill): Which is correct?
+			// if (poly->Array.generic_type != nullptr && modify_type) {
+			if (poly->Array.generic_type != nullptr) {
 				Type *gt = poly->Array.generic_type;
 				GB_ASSERT(gt->kind == Type_Generic);
 				Entity *e = scope_lookup_entity(gt->Generic.scope, gt->Generic.name);
@@ -808,8 +801,6 @@ bool is_polymorphic_type_assignable(Checker *c, Type *poly, Type *source, bool c
 				} else {
 					return false;
 				}
-
-				return is_polymorphic_type_assignable(c, poly->Array.elem, source->Array.elem, true, modify_type);
 			}
 			if (poly->Array.count == source->Array.count) {
 				return is_polymorphic_type_assignable(c, poly->Array.elem, source->Array.elem, true, modify_type);
@@ -936,10 +927,6 @@ Entity *check_ident(Checker *c, Operand *o, AstNode *n, Type *named_type, Type *
 			return nullptr;
 		}
 	}
-
-	bool is_overloaded = false;
-	isize overload_count = 0;
-
 	bool is_alias = false;
 	while (e->kind == Entity_Alias) {
 		GB_ASSERT(e->Alias.base != nullptr);
@@ -949,63 +936,14 @@ Entity *check_ident(Checker *c, Operand *o, AstNode *n, Type *named_type, Type *
 
 	HashKey key = hash_string(e->token.string);
 
-
-	if (e->kind == Entity_Procedure) {
-		// NOTE(bill): Overloads are only allowed with the same scope
-		Scope *s = e->scope;
-		overload_count = multi_map_count(&s->elements, key);
-		if (overload_count > 1) {
-			is_overloaded = true;
-		}
-	}
-
-	if (is_overloaded) {
-		Scope *s = e->scope;
-		bool skip = false;
-
-		Entity **procs = gb_alloc_array(heap_allocator(), Entity *, overload_count);
-		multi_map_get_all(&s->elements, key, procs);
-		if (type_hint != nullptr) {
-			gbTempArenaMemory tmp = gb_temp_arena_memory_begin(&c->tmp_arena);
-			defer (gb_temp_arena_memory_end(tmp));
-
-			// NOTE(bill): These should be done
-			for (isize i = 0; i < overload_count; i++) {
-				Type *t = base_type(procs[i]->type);
-				if (t == t_invalid) {
-					continue;
-				}
-				Operand x = {};
-				x.mode = Addressing_Value;
-				x.type = t;
-				if (check_is_assignable_to(c, &x, type_hint)) {
-					e = procs[i];
-					add_entity_use(c, n, e);
-					skip = true;
-					break;
-				}
-			}
-		}
-
-		if (!skip) {
-			o->mode              = Addressing_Overload;
-			o->type              = t_invalid;
-			o->overload_count    = overload_count;
-			o->overload_entities = procs;
-			return nullptr;
-		}
-		gb_free(heap_allocator(), procs);
-	}
-
-	if (e->kind == Entity_ProcedureGrouping) {
-		auto *pge = &e->ProcedureGrouping;
+	if (e->kind == Entity_ProcGroup) {
+		auto *pge = &e->ProcGroup;
 
 		DeclInfo *d = decl_info_of_entity(&c->info, e);
 		check_entity_decl(c, e, d, nullptr);
 
 
-		Entity **procs = pge->entities.data;
-		isize overload_count = pge->entities.count;
+		Array<Entity *> procs = pge->entities;
 		bool skip = false;
 
 		if (type_hint != nullptr) {
@@ -1013,7 +951,7 @@ Entity *check_ident(Checker *c, Operand *o, AstNode *n, Type *named_type, Type *
 			defer (gb_temp_arena_memory_end(tmp));
 
 			// NOTE(bill): These should be done
-			for (isize i = 0; i < overload_count; i++) {
+			for_array(i, procs) {
 				Type *t = base_type(procs[i]->type);
 				if (t == t_invalid) {
 					continue;
@@ -1031,10 +969,9 @@ Entity *check_ident(Checker *c, Operand *o, AstNode *n, Type *named_type, Type *
 		}
 
 		if (!skip) {
-			o->mode              = Addressing_Overload;
-			o->type              = t_invalid;
-			o->overload_count    = overload_count;
-			o->overload_entities = procs;
+			o->mode       = Addressing_ProcGroup;
+			o->type       = t_invalid;
+			o->proc_group = e;
 			return nullptr;
 		}
 	}
@@ -1550,13 +1487,13 @@ void check_comparison(Checker *c, Operand *x, Operand *y, TokenKind op) {
 		}
 	} else {
 		gbString xt, yt;
-		if (x->mode == Addressing_Overload) {
-			xt = gb_string_make(heap_allocator(), "overloaded procedure");
+		if (x->mode == Addressing_ProcGroup) {
+			xt = gb_string_make(heap_allocator(), "procedure group");
 		} else {
 			xt = type_to_string(x->type);
 		}
-		if (y->mode == Addressing_Overload) {
-			yt = gb_string_make(heap_allocator(), "overloaded procedure");
+		if (y->mode == Addressing_ProcGroup) {
+			yt = gb_string_make(heap_allocator(), "procedure group");
 		} else {
 			yt = type_to_string(y->type);
 		}
@@ -2298,7 +2235,6 @@ void convert_to_typed(Checker *c, Operand *operand, Type *target_type) {
 		}
 		break;
 
-#if defined(ALLOW_ARRAY_PROGRAMMING)
 	case Type_Array: {
 		Type *elem = base_array_type(t);
 		if (check_is_assignable_to(c, operand, elem)) {
@@ -2311,7 +2247,6 @@ void convert_to_typed(Checker *c, Operand *operand, Type *target_type) {
 
 		break;
 	}
-#endif
 
 	case Type_Union:
 		if (!is_operand_nil(*operand) && !is_operand_undef(*operand)) {
@@ -2483,18 +2418,6 @@ bool check_index_value(Checker *c, bool open_range, AstNode *index_value, i64 ma
 	return true;
 }
 
-isize entity_overload_count(Scope *s, String name) {
-	Entity *e = scope_lookup_entity(s, name);
-	if (e == nullptr) {
-		return 0;
-	}
-	if (e->kind == Entity_Procedure) {
-		// NOTE(bill): Overloads are only allowed with the same scope
-		return multi_map_count(&s->elements, hash_string(e->token.string));
-	}
-	return 1;
-}
-
 Entity *check_selector(Checker *c, Operand *operand, AstNode *node, Type *type_hint) {
 	ast_node(se, SelectorExpr, node);
 
@@ -2572,7 +2495,8 @@ Entity *check_selector(Checker *c, Operand *operand, AstNode *node, Type *type_h
 			}
 
 			check_entity_decl(c, entity, nullptr, nullptr);
-			GB_ASSERT(entity->type != nullptr || entity->kind == Entity_ProcedureGrouping);
+			GB_ASSERT(entity->type != nullptr);
+
 
 			if (is_alias) {
 				// TODO(bill): Which scope do you search for for an alias?
@@ -2580,71 +2504,16 @@ Entity *check_selector(Checker *c, Operand *operand, AstNode *node, Type *type_h
 				entity_name = entity->token.string;
 			}
 
-			isize overload_count = entity_overload_count(import_scope, entity_name);
-			bool is_overloaded = overload_count > 1;
 
 			bool implicit_is_found = is_entity_implicitly_imported(e, entity);
 			bool is_not_exported = !is_entity_exported(entity);
 			if (entity->kind == Entity_ImportName) {
 				is_not_exported = true;
 			} else if (implicit_is_found) {
-				is_not_exported = !is_overloaded;
+				is_not_exported = true;
 			}
 
 
-			Entity **procs = nullptr;
-
-			if (is_overloaded) {
-				HashKey key = hash_string(entity_name);
-				procs = gb_alloc_array(heap_allocator(), Entity *, overload_count);
-				multi_map_get_all(&import_scope->elements, key, procs);
-			} else if (entity->kind == Entity_ProcedureGrouping) {
-				is_overloaded = true;
-				procs = entity->ProcedureGrouping.entities.data;
-				overload_count = entity->ProcedureGrouping.entities.count;
-			}
-
-			if (is_overloaded) {
-				bool skip = false;
-				for (isize i = 0; i < overload_count; i++) {
-					Type *t = base_type(procs[i]->type);
-					if (t == t_invalid) {
-						continue;
-					}
-
-					// NOTE(bill): Check to see if it's imported
-					if (is_entity_implicitly_imported(e, procs[i])) {
-						gb_swap(Entity *, procs[i], procs[overload_count-1]);
-						overload_count--;
-						i--; // NOTE(bill): Counteract the post event
-						continue;
-					}
-
-					Operand x = {};
-					x.mode = Addressing_Value;
-					x.type = t;
-					if (type_hint != nullptr) {
-						if (check_is_assignable_to(c, &x, type_hint)) {
-							entity = procs[i];
-							skip = true;
-							break;
-						}
-					}
-				}
-
-				if (!skip) {
-					if (overload_count > 0) {
-						operand->mode              = Addressing_Overload;
-						operand->type              = t_invalid;
-						operand->expr              = node;
-						operand->overload_count    = overload_count;
-						operand->overload_entities = procs;
-						return procs[0];
-					} else {
-						is_not_exported = true;
-					}
-				}
-			}
 
 			if (is_not_exported) {
 				gbString sel_str = expr_to_string(selector);
@@ -2653,6 +2522,38 @@ Entity *check_selector(Checker *c, Operand *operand, AstNode *node, Type *type_h
 				operand->mode = Addressing_Invalid;
 				operand->expr = node;
 				return nullptr;
+			}
+
+			if (entity->kind == Entity_ProcGroup) {
+				Array<Entity *> procs = entity->ProcGroup.entities;
+				bool skip = false;
+				for_array(i, procs) {
+					Entity *p = procs[i];
+					Type *t = base_type(p->type);
+					if (t == t_invalid) {
+						continue;
+					}
+
+					Operand x = {};
+					x.mode = Addressing_Value;
+					x.type = t;
+					if (type_hint != nullptr) {
+						if (check_is_assignable_to(c, &x, type_hint)) {
+							entity = p;
+							skip = true;
+							break;
+						}
+					}
+				}
+
+				if (!skip) {
+					GB_ASSERT(entity != nullptr);
+					operand->mode       = Addressing_ProcGroup;
+					operand->type       = t_invalid;
+					operand->expr       = node;
+					operand->proc_group = entity;
+					return entity;
+				}
 			}
 		}
 	}
@@ -2791,8 +2692,9 @@ Entity *check_selector(Checker *c, Operand *operand, AstNode *node, Type *type_h
 		operand->builtin_id = cast(BuiltinProcId)entity->Builtin.id;
 		break;
 
-	case Entity_ProcedureGrouping:
-		entity->type = t_invalid;
+	case Entity_ProcGroup:
+		operand->mode = Addressing_ProcGroup;
+		operand->proc_group = entity;
 		break;
 
 	// NOTE(bill): These cases should never be hit but are here for sanity reasons
@@ -3429,7 +3331,9 @@ bool check_builtin_procedure(Checker *c, Operand *operand, AstNode *call, i32 id
 			return false;
 		}
 
-		operand->type = make_type_array(c->allocator, elem_type, arg_count);
+		if (arg_count < max_count) {
+			operand->type = make_type_array(c->allocator, elem_type, arg_count);
+		}
 		operand->mode = Addressing_Value;
 
 		break;
@@ -3980,7 +3884,7 @@ break;
 
 isize add_dependencies_from_unpacking(Checker *c, Entity **lhs, isize lhs_count, isize tuple_index, isize tuple_count) {
 	if (lhs != nullptr) {
-		for (isize j = 0; tuple_index < lhs_count && j < tuple_count; j++) {
+		for (isize j = 0; (tuple_index + j) < lhs_count && j < tuple_count; j++) {
 			Entity *e = lhs[tuple_index + j];
 			DeclInfo *decl = decl_info_of_entity(&c->info, e);
 			if (decl != nullptr) {
@@ -4439,7 +4343,6 @@ CALL_ARGUMENT_CHECKER(check_named_call_arguments) {
 	return err;
 }
 
-
 CallArgumentData check_call_arguments(Checker *c, Operand *operand, Type *proc_type, AstNode *call) {
 	ast_node(ce, CallExpr, call);
 
@@ -4469,31 +4372,21 @@ CallArgumentData check_call_arguments(Checker *c, Operand *operand, Type *proc_t
 		check_unpack_arguments(c, nullptr, -1, &operands, ce->args, false);
 	}
 
-	if (operand->mode == Addressing_Overload) {
-		// GB_ASSERT_MSG(operand->overload_entities != nullptr &&
-		//               operand->overload_count > 0,
-		//               "%p %td", operand->overload_entities, operand->overload_count);
-		isize               overload_count = operand->overload_count;
-		Entity **           procs          = operand->overload_entities;
-		ValidIndexAndScore *valids         = gb_alloc_array(heap_allocator(), ValidIndexAndScore, overload_count);
-		isize               valid_count    = 0;
+	if (operand->mode == Addressing_ProcGroup) {
+		check_entity_decl(c, operand->proc_group, nullptr, nullptr);
 
-		defer (gb_free(heap_allocator(), procs));
+		Array<Entity *> procs = proc_group_entities(c, *operand);
+
+		ValidIndexAndScore *valids         = gb_alloc_array(heap_allocator(), ValidIndexAndScore, procs.count);
+		isize               valid_count    = 0;
 		defer (gb_free(heap_allocator(), valids));
 
 		gbString expr_name = expr_to_string(operand->expr);
 		defer (gb_string_free(expr_name));
 
-		for (isize i = 0; i < overload_count; i++) {
-			Entity *e = procs[i];
-			// GB_ASSERT(e->token.string == name);
-			DeclInfo *d = decl_info_of_entity(&c->info, e);
-			GB_ASSERT(d != nullptr);
-			check_entity_decl(c, e, d, nullptr);
-		}
-
-		for (isize i = 0; i < overload_count; i++) {
+		for_array(i, procs) {
 			Entity *p = procs[i];
+			check_entity_decl(c, p, nullptr, nullptr);
 			Type *pt = base_type(p->type);
 			if (pt != nullptr && is_type_proc(pt)) {
 				CallArgumentError err = CallArgumentError_None;
@@ -4502,6 +4395,7 @@ CallArgumentData check_call_arguments(Checker *c, Operand *operand, Type *proc_t
 				defer (c->context = prev_context);
 				c->context.no_polymorphic_errors = true;
 				c->context.allow_polymorphic_types = is_type_polymorphic(pt);
+
 				err = call_checker(c, call, pt, p, operands, CallArgumentMode_NoErrors, &data);
 
 				if (err == CallArgumentError_None) {
@@ -4531,8 +4425,8 @@ CallArgumentData check_call_arguments(Checker *c, Operand *operand, Type *proc_t
 
 
 		if (valid_count == 0) {
-			error(operand->expr, "No overloads or ambiguous call for '%s' that match with the given arguments", expr_name);
-			gb_printf_err("\tGiven argument types -> (");
+			error(operand->expr, "No procedures or ambiguous call for procedure group '%s' that match with the given arguments", expr_name);
+			gb_printf_err("\tGiven argument types: (");
 			for_array(i, operands) {
 				Operand o = operands[i];
 				if (i > 0) gb_printf_err(", ");
@@ -4542,33 +4436,38 @@ CallArgumentData check_call_arguments(Checker *c, Operand *operand, Type *proc_t
 			}
 			gb_printf_err(")\n");
 
-			if (overload_count > 0) {
+			if (procs.count > 0) {
 				gb_printf_err("Did you mean to use one of the following:\n");
 			}
-			for (isize i = 0; i < overload_count; i++) {
+			for_array(i, procs) {
 				Entity *proc = procs[i];
 				TokenPos pos = proc->token.pos;
 				Type *t = base_type(proc->type);
 				if (t == t_invalid) continue;
 				GB_ASSERT(t->kind == Type_Proc);
 				gbString pt;
+				defer (gb_string_free(pt));
 				if (t->Proc.node != nullptr) {
 					pt = expr_to_string(t->Proc.node);
 				} else {
 					pt = type_to_string(t);
 				}
 				String name = proc->token.string;
-				gb_printf_err("\t%.*s :: %s at %.*s(%td:%td) with score %lld\n", LIT(name), pt, LIT(pos.file), pos.line, pos.column, cast(long long)valids[i].score);
-				// gb_printf_err("\t%.*s :: %s at %.*s(%td:%td)\n", LIT(name), pt, LIT(pos.file), pos.line, pos.column);
-				gb_string_free(pt);
+
+				char const *sep = "::";
+				if (proc->kind == Entity_Variable) {
+					sep = ":=";
+				}
+				// gb_printf_err("\t%.*s %s %s at %.*s(%td:%td) with score %lld\n", LIT(name), sep, pt, LIT(pos.file), pos.line, pos.column, cast(long long)valids[i].score);
+				gb_printf_err("\t%.*s %s %s at %.*s(%td:%td)\n", LIT(name), sep, pt, LIT(pos.file), pos.line, pos.column);
 			}
-			if (overload_count > 0) {
+			if (procs.count > 0) {
 				gb_printf_err("\n");
 			}
 			result_type = t_invalid;
 		} else if (valid_count > 1) {
-			error(operand->expr, "Ambiguous procedure call '%s' tha match with the given arguments", expr_name);
-			gb_printf_err("\tGiven argument types -> (");
+			error(operand->expr, "Ambiguous procedure group call '%s' that match with the given arguments", expr_name);
+			gb_printf_err("\tGiven argument types: (");
 			for_array(i, operands) {
 				Operand o = operands[i];
 				if (i > 0) gb_printf_err(", ");
@@ -4583,15 +4482,18 @@ CallArgumentData check_call_arguments(Checker *c, Operand *operand, Type *proc_t
 				TokenPos pos = proc->token.pos;
 				Type *t = base_type(proc->type); GB_ASSERT(t->kind == Type_Proc);
 				gbString pt;
+				defer (gb_string_free(pt));
 				if (t->Proc.node != nullptr) {
 					pt = expr_to_string(t->Proc.node);
 				} else {
 					pt = type_to_string(t);
 				}
 				String name = proc->token.string;
-				// gb_printf_err("\t%.*s :: %s at %.*s(%td:%td) with score %lld\n", LIT(name), pt, LIT(pos.file), pos.line, pos.column, cast(long long)valids[i].score);
-				gb_printf_err("\t%.*s :: %s at %.*s(%td:%td)\n", LIT(name), pt, LIT(pos.file), pos.line, pos.column);
-				gb_string_free(pt);
+				char const *sep = "::";
+				if (proc->kind == Entity_Variable) {
+					sep = ":=";
+				}
+				gb_printf_err("\t%.*s %s %s at %.*s(%td:%td)\n", LIT(name), sep, pt, LIT(pos.file), pos.line, pos.column);
 			}
 			result_type = t_invalid;
 		} else {
@@ -4606,11 +4508,8 @@ CallArgumentData check_call_arguments(Checker *c, Operand *operand, Type *proc_t
 			proc_type = e->type;
 			CallArgumentData data = {};
 			CallArgumentError err = call_checker(c, call, proc_type, e, operands, CallArgumentMode_ShowErrors, &data);
-			if (data.gen_entity != nullptr) {
-				add_entity_use(c, ident, data.gen_entity);
-			} else {
-				add_entity_use(c, ident, e);
-			}
+			Entity *entity_to_use = data.gen_entity != nullptr ? data.gen_entity : e;
+			add_entity_use(c, ident, entity_to_use);
 			return data;
 		}
 	} else {
@@ -4623,11 +4522,8 @@ CallArgumentData check_call_arguments(Checker *c, Operand *operand, Type *proc_t
 		Entity *e = entity_of_ident(&c->info, ident);
 		CallArgumentData data = {};
 		CallArgumentError err = call_checker(c, call, proc_type, e, operands, CallArgumentMode_ShowErrors, &data);
-		if (data.gen_entity != nullptr) {
-			add_entity_use(c, ident, data.gen_entity);
-		} else {
-			add_entity_use(c, ident, e);
-		}
+		Entity *entity_to_use = data.gen_entity != nullptr ? data.gen_entity : e;
+		add_entity_use(c, ident, entity_to_use);
 		return data;
 	}
 
@@ -4953,7 +4849,7 @@ ExprKind check_call_expr(Checker *c, Operand *operand, AstNode *call) {
 	}
 
 	Type *proc_type = base_type(operand->type);
-	if (operand->mode != Addressing_Overload) {
+	if (operand->mode != Addressing_ProcGroup) {
 		bool valid_type = (proc_type != nullptr) && is_type_proc(proc_type);
 		bool valid_mode = is_operand_value(*operand);
 		if (!valid_type || !valid_mode) {
@@ -5158,13 +5054,13 @@ ExprKind check_expr_base_internal(Checker *c, Operand *o, AstNode *node, Type *t
 
 	case_ast_node(bl, BasicLit, node);
 		Type *t = t_invalid;
-		switch (bl->kind) {
+		switch (bl->token.kind) {
 		case Token_Integer: t = t_untyped_integer; break;
 		case Token_Float:   t = t_untyped_float;   break;
 		case Token_String:  t = t_untyped_string;  break;
 		case Token_Rune:    t = t_untyped_rune;    break;
 		case Token_Imag: {
-			String s = bl->string;
+			String s = bl->token.string;
 			Rune r = s[s.len-1];
 			switch (r) {
 			case 'i': t = t_untyped_complex; break;
@@ -5176,7 +5072,7 @@ ExprKind check_expr_base_internal(Checker *c, Operand *o, AstNode *node, Type *t
 		}
 		o->mode  = Addressing_Constant;
 		o->type  = t;
-		o->value = exact_value_from_basic_literal(*bl);
+		o->value = exact_value_from_basic_literal(bl->token);
 	case_end;
 
 	case_ast_node(bd, BasicDirective, node);
@@ -5206,8 +5102,8 @@ ExprKind check_expr_base_internal(Checker *c, Operand *o, AstNode *node, Type *t
 		o->mode = Addressing_Constant;
 	case_end;
 
-	case_ast_node(pg, ProcGrouping, node);
-		error(node, "Illegal use of a procedure grouping");
+	case_ast_node(pg, ProcGroup, node);
+		error(node, "Illegal use of a procedure group");
 		o->mode = Addressing_Invalid;
 	case_end;
 
@@ -5525,15 +5421,13 @@ ExprKind check_expr_base_internal(Checker *c, Operand *o, AstNode *node, Type *t
 
 			i64 max = 0;
 			isize index = 0;
-			isize elem_count = cl->elems.count;
 
 			Type *bet = base_type(elem_type);
 			if (!elem_type_can_be_constant(bet)) {
 				is_constant = false;
 			}
 
-			for (; index < elem_count; index++) {
-				GB_ASSERT(cl->elems.data != nullptr);
+			for (; index < cl->elems.count; index++) {
 				AstNode *e = cl->elems[index];
 				if (e == nullptr) {
 					error(node, "Invalid literal element");
@@ -5553,16 +5447,18 @@ ExprKind check_expr_base_internal(Checker *c, Operand *o, AstNode *node, Type *t
 				check_expr_with_type_hint(c, &operand, e, elem_type);
 				check_assignment(c, &operand, elem_type, context_name);
 
-				if (is_constant) {
-					is_constant = operand.mode == Addressing_Constant;
-				}
+				is_constant = is_constant && operand.mode == Addressing_Constant;
 			}
 			if (max < index) {
 				max = index;
 			}
 
-			if (t->kind == Type_Array && is_to_be_determined_array_count) {
-				t->Array.count = max;
+			if (t->kind == Type_Array) {
+				if (is_to_be_determined_array_count) {
+					t->Array.count = max;
+				} else if (0 < max && max < t->Array.count) {
+					error(node, "Expected %lld values for this array literal, got %lld", cast(long long)t->Array.count, cast(long long)max);
+				}
 			}
 
 			break;
@@ -6193,7 +6089,7 @@ gbString write_expr_to_string(gbString str, AstNode *node) {
 	case_end;
 
 	case_ast_node(bl, BasicLit, node);
-		str = string_append_token(str, *bl);
+		str = string_append_token(str, bl->token);
 	case_end;
 
 	case_ast_node(bd, BasicDirective, node);
@@ -6205,7 +6101,7 @@ gbString write_expr_to_string(gbString str, AstNode *node) {
 		str = gb_string_appendc(str, "---");
 	case_end;
 
-	case_ast_node(pg, ProcGrouping, node);
+	case_ast_node(pg, ProcGroup, node);
 		str = gb_string_appendc(str, "proc[");
 		for_array(i, pg->args) {
 			if (i > 0) str = gb_string_appendc(str, ", ");
@@ -6484,7 +6380,6 @@ gbString write_expr_to_string(gbString str, AstNode *node) {
 	case_ast_node(st, StructType, node);
 		str = gb_string_appendc(str, "struct ");
 		if (st->is_packed)    str = gb_string_appendc(str, "#packed ");
-		if (st->is_ordered)   str = gb_string_appendc(str, "#ordered ");
 		if (st->is_raw_union) str = gb_string_appendc(str, "#raw_union ");
 		str = gb_string_append_rune(str, '{');
 		str = write_struct_fields_to_string(str, st->fields);

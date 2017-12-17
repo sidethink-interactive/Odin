@@ -30,7 +30,7 @@ void check_stmt_list(Checker *c, Array<AstNode *> stmts, u32 flags) {
 		if (i+1 < max) {
 			switch (n->kind) {
 			case AstNode_ReturnStmt:
-				error(n, "Statements after this 'return' are never executed");
+				error(n, "Statements after this 'return' are never execu");
 				break;
 
 			case AstNode_BranchStmt:
@@ -182,7 +182,7 @@ Type *check_assignment_variable(Checker *c, Operand *lhs, Operand *rhs) {
 		return nullptr;
 	}
 	if (rhs->type == t_invalid &&
-	    rhs->mode != Addressing_Overload &&
+	    rhs->mode != Addressing_ProcGroup &&
 	    rhs->mode != Addressing_Builtin) {
 		return nullptr;
 	}
@@ -203,17 +203,16 @@ Type *check_assignment_variable(Checker *c, Operand *lhs, Operand *rhs) {
 	bool used = false;
 
 	if (lhs->mode == Addressing_Invalid ||
-	    (lhs->type == t_invalid && lhs->mode != Addressing_Overload)) {
+	    (lhs->type == t_invalid && lhs->mode != Addressing_ProcGroup)) {
 		return nullptr;
 	}
 
-	if (rhs->mode == Addressing_Overload) {
-		isize overload_count = rhs->overload_count;
-		Entity **procs = rhs->overload_entities;
-		GB_ASSERT(procs != nullptr && overload_count > 0);
+	if (rhs->mode == Addressing_ProcGroup) {
+		Array<Entity *> procs = proc_group_entities(c, *rhs);
+		GB_ASSERT(procs.count > 0);
 
 		// NOTE(bill): These should be done
-		for (isize i = 0; i < overload_count; i++) {
+		for_array(i, procs) {
 			Type *t = base_type(procs[i]->type);
 			if (t == t_invalid) {
 				continue;
@@ -232,8 +231,7 @@ Type *check_assignment_variable(Checker *c, Operand *lhs, Operand *rhs) {
 			// HACK TODO(bill): Should the entities be freed as it's technically a leak
 			rhs->mode = Addressing_Value;
 			rhs->type = e->type;
-			rhs->overload_count = 0;
-			rhs->overload_entities = nullptr;
+			rhs->proc_group = nullptr;
 		}
 	} else {
 		if (node->kind == AstNode_Ident) {
@@ -524,27 +522,25 @@ bool check_using_stmt_entity(Checker *c, AstNodeUsingStmt *us, AstNode *expr, bo
 
 	case Entity_Variable: {
 		Type *t = base_type(type_deref(e->type));
-		if (is_type_struct(t) || is_type_raw_union(t) || is_type_union(t)) {
+		if (t->kind == Type_Struct) {
 			// TODO(bill): Make it work for unions too
 			Scope *found = scope_of_node(&c->info, t->Struct.node);
 			for_array(i, found->elements.entries) {
 				Entity *f = found->elements.entries[i].value;
 				if (f->kind == Entity_Variable) {
 					Entity *uvar = make_entity_using_variable(c->allocator, e, f->token, f->type);
-					// if (is_selector) {
-						uvar->using_expr = expr;
-					// }
+					uvar->using_expr = expr;
 					Entity *prev = scope_insert_entity(c->context.scope, uvar);
 					if (prev != nullptr) {
 						gbString expr_str = expr_to_string(expr);
-						error(us->token, "Namespace collision while 'using' '%s' of: %.*s", expr_str, LIT(prev->token.string));
+						error(us->token, "Namespace collision while using '%s' of: '%.*s'", expr_str, LIT(prev->token.string));
 						gb_string_free(expr_str);
 						return false;
 					}
 				}
 			}
 		} else {
-			error(us->token, "'using' can only be applied to variables of type `struct`");
+			error(us->token, "'using' can only be applied to variables of type 'struct'");
 			return false;
 		}
 
@@ -556,6 +552,7 @@ bool check_using_stmt_entity(Checker *c, AstNodeUsingStmt *us, AstNode *expr, bo
 		break;
 
 	case Entity_Procedure:
+	case Entity_ProcGroup:
 	case Entity_Builtin:
 		error(us->token, "'using' cannot be applied to a procedure");
 		break;
@@ -847,7 +844,7 @@ void check_type_switch_stmt(Checker *c, AstNode *node, u32 mod_flags) {
 	}
 
 
-	Map<bool> seen = {}; // Multimap
+	Map<bool> seen = {}; // Multimap, Key: Type *
 	map_init(&seen, heap_allocator());
 
 	for_array(i, bs->stmts) {
@@ -1122,7 +1119,7 @@ void check_stmt_internal(Checker *c, AstNode *node, u32 flags) {
 
 	case_ast_node(bs, BlockStmt, node);
 		check_open_scope(c, node);
-		check_stmt_list(c, bs->stmts, mod_flags);
+		check_stmt_list(c, bs->stmts, flags);
 		check_close_scope(c);
 	case_end;
 
@@ -1648,6 +1645,151 @@ void check_stmt_internal(Checker *c, AstNode *node, u32 flags) {
 		}
 	case_end;
 
+	case_ast_node(uis, UsingInStmt, node);
+		if (uis->list.count == 0) {
+			error(node, "Empty 'using' list");
+			return;
+		}
+		AstNode *expr = uis->expr;
+		Entity *e = nullptr;
+		Operand o = {};
+		if (expr->kind == AstNode_Ident) {
+			e = check_ident(c, &o, expr, nullptr, nullptr, true);
+		} else if (expr->kind == AstNode_SelectorExpr) {
+			e = check_selector(c, &o, expr, nullptr);
+		}
+		if (e == nullptr) {
+			error(expr, "'using' applied to an unknown entity");
+			return;
+		}
+		add_entity_use(c, expr, e);
+
+
+		switch (e->kind) {
+		case Entity_TypeName: {
+			Type *t = base_type(e->type);
+			if (t->kind == Type_Enum) {
+				GB_ASSERT(t->Enum.scope != nullptr);
+				for_array(list_index, uis->list) {
+					AstNode *node = uis->list[list_index];
+					ast_node(ident, Ident, node);
+					String name = ident->token.string;
+					Entity *f = scope_lookup_entity(t->Enum.scope, name);
+
+					if (f == nullptr || !is_entity_exported(f)) {
+						if (is_blank_ident(name)) {
+							error(node, "'_' cannot be used as a value");
+						} else {
+							error(node, "Undeclared name in this enumeration: '%.*s'", LIT(name));
+						}
+						continue;
+					}
+
+					add_entity_use(c, node, f);
+					add_entity(c, c->context.scope, node, f);
+				}
+			} else {
+				error(node, "'using' can be only applied to enum type entities");
+			}
+
+			break;
+		}
+
+		case Entity_ImportName: {
+			Scope *scope = e->ImportName.scope;
+			for_array(list_index, uis->list) {
+				AstNode *node = uis->list[list_index];
+				ast_node(ident, Ident, node);
+				String name = ident->token.string;
+
+				Entity *f = scope_lookup_entity(scope, name);
+				if (f == nullptr) {
+					if (is_blank_ident(name)) {
+						error(node, "'_' cannot be used as a value");
+					} else {
+						error(node, "Undeclared name in this import name: '%.*s'", LIT(name));
+					}
+					continue;
+				}
+
+				bool implicit_is_found = ptr_set_exists(&scope->implicit, f);
+				if (is_entity_exported(f) && !implicit_is_found) {
+					add_entity_use(c, node, f);
+					add_entity(c, c->context.scope, node, f);
+				} else {
+					error(node, "'%.*s' is exported from '%.*s'", LIT(f->token.string), LIT(e->token.string));
+					continue;
+				}
+			}
+
+			break;
+		}
+
+		case Entity_Variable: {
+			Type *t = base_type(type_deref(e->type));
+			if (t->kind == Type_Struct) {
+				// TODO(bill): Make it work for unions too
+				Scope *found = scope_of_node(&c->info, t->Struct.node);
+				for_array(list_index, uis->list) {
+					AstNode *node = uis->list[list_index];
+					ast_node(ident, Ident, node);
+					String name = ident->token.string;
+
+					Entity *f = scope_lookup_entity(found, name);
+					if (f == nullptr || f->kind != Entity_Variable) {
+						if (is_blank_ident(name)) {
+							error(node, "'_' cannot be used as a value");
+						} else {
+							error(node, "Undeclared name in this variable: '%.*s'", LIT(name));
+						}
+						continue;
+					}
+
+					Entity *uvar = make_entity_using_variable(c->allocator, e, f->token, f->type);
+					uvar->using_expr = expr;
+					Entity *prev = scope_insert_entity(c->context.scope, uvar);
+					if (prev != nullptr) {
+						gbString expr_str = expr_to_string(expr);
+						error(node, "Namespace collision while using '%s' of: '%.*s'", expr_str, LIT(prev->token.string));
+						gb_string_free(expr_str);
+						continue;
+					}
+				}
+			} else {
+				error(node, "'using' can only be applied to variables of type `struct`");
+				return;
+			}
+
+			break;
+		}
+
+		case Entity_Constant:
+			error(node, "'using' cannot be applied to a constant");
+			break;
+
+		case Entity_Procedure:
+		case Entity_ProcGroup:
+		case Entity_Builtin:
+			error(node, "'using' cannot be applied to a procedure");
+			break;
+
+		case Entity_Nil:
+			error(node, "'using' cannot be applied to 'nil'");
+			break;
+
+		case Entity_Label:
+			error(node, "'using' cannot be applied to a label");
+			break;
+
+		case Entity_Invalid:
+			error(node, "'using' cannot be applied to an invalid entity");
+			break;
+
+		default:
+			GB_PANIC("TODO(bill): 'using' other expressions?");
+		}
+	case_end;
+
 
 
 	case_ast_node(pa, PushContext, node);
@@ -1680,176 +1822,183 @@ void check_stmt_internal(Checker *c, AstNode *node, u32 flags) {
 	case_end;
 
 	case_ast_node(vd, ValueDecl, node);
-		if (!vd->is_mutable) {
-			break;
-		}
-		Entity **entities = gb_alloc_array(c->allocator, Entity *, vd->names.count);
-		isize entity_count = 0;
+		if (vd->is_mutable) {
+			Entity **entities = gb_alloc_array(c->allocator, Entity *, vd->names.count);
+			isize entity_count = 0;
 
-		for_array(i, vd->names) {
-			AstNode *name = vd->names[i];
-			Entity *entity = nullptr;
-			if (name->kind != AstNode_Ident) {
-				error(name, "A variable declaration must be an identifier");
-			} else {
-				Token token = name->Ident.token;
-				String str = token.string;
-				Entity *found = nullptr;
-				// NOTE(bill): Ignore assignments to '_'
-				if (!is_blank_ident(str)) {
-					found = current_scope_lookup_entity(c->context.scope, str);
-				}
-				if (found == nullptr) {
-					entity = make_entity_variable(c->allocator, c->context.scope, token, nullptr, false);
-					entity->identifier = name;
-
-					AstNode *fl = c->context.foreign_context.curr_library;
-					if (fl != nullptr) {
-						GB_ASSERT(fl->kind == AstNode_Ident);
-						entity->Variable.is_foreign = true;
-						entity->Variable.foreign_library_ident = fl;
-					}
+			isize new_name_count = 0;
+			for_array(i, vd->names) {
+				AstNode *name = vd->names[i];
+				Entity *entity = nullptr;
+				if (name->kind != AstNode_Ident) {
+					error(name, "A variable declaration must be an identifier");
 				} else {
-					TokenPos pos = found->token.pos;
-					error(token,
-					      "Redeclaration of '%.*s' in this scope\n"
-					      "\tat %.*s(%td:%td)",
-					      LIT(str), LIT(pos.file), pos.line, pos.column);
-					entity = found;
-				}
-			}
-			if (entity == nullptr) {
-				entity = make_entity_dummy_variable(c->allocator, c->global_scope, ast_node_token(name));
-			}
-			entity->parent_proc_decl = c->context.curr_proc_decl;
-			entities[entity_count++] = entity;
-		}
+					Token token = name->Ident.token;
+					String str = token.string;
+					Entity *found = nullptr;
+					// NOTE(bill): Ignore assignments to '_'
+					if (!is_blank_ident(str)) {
+						found = current_scope_lookup_entity(c->context.scope, str);
+						new_name_count += 1;
+					}
+					if (found == nullptr) {
+						entity = make_entity_variable(c->allocator, c->context.scope, token, nullptr, false);
+						entity->identifier = name;
 
-		Type *init_type = nullptr;
-		if (vd->type != nullptr) {
-			init_type = check_type(c, vd->type, nullptr);
-			if (init_type == nullptr) {
-				init_type = t_invalid;
-			} else if (is_type_polymorphic(base_type(init_type))) {
-				gbString str = type_to_string(init_type);
-				error(vd->type, "Invalid use of a polymorphic type '%s' in variable declaration", str);
-				gb_string_free(str);
-				init_type = t_invalid;
-			} else if (is_type_empty_union(init_type)) {
-				gbString str = type_to_string(init_type);
-				error(vd->type, "An empty union '%s' cannot be instantiated in variable declaration", str);
-				gb_string_free(str);
-				init_type = t_invalid;
-			}
-		}
-
-
-		// TODO NOTE(bill): This technically checks things multple times
-		AttributeContext ac = make_attribute_context(c->context.foreign_context.link_prefix);
-		check_decl_attributes(c, vd->attributes, var_decl_attribute, &ac);
-
-		for (isize i = 0; i < entity_count; i++) {
-			Entity *e = entities[i];
-			GB_ASSERT(e != nullptr);
-			if (e->flags & EntityFlag_Visited) {
-				e->type = t_invalid;
-				continue;
-			}
-			e->flags |= EntityFlag_Visited;
-
-			if (e->type == nullptr) {
-				e->type = init_type;
-			}
-			ac.link_name = handle_link_name(c, e->token, ac.link_name, ac.link_prefix);
-			e->Variable.thread_local_model = ac.thread_local_model;
-
-			if (ac.link_name.len > 0) {
-				e->Variable.link_name = ac.link_name;
-			}
-		}
-
-		check_arity_match(c, vd);
-		check_init_variables(c, entities, entity_count, vd->values, str_lit("variable declaration"));
-
-		for (isize i = 0; i < entity_count; i++) {
-			Entity *e = entities[i];
-			if (e->Variable.is_foreign) {
-				if (vd->values.count > 0) {
-					error(e->token, "A foreign variable declaration cannot have a default value");
-				}
-
-				String name = e->token.string;
-				if (e->Variable.link_name.len > 0) {
-					name = e->Variable.link_name;
-				}
-
-				if (vd->values.count > 0) {
-					error(e->token, "A foreign variable declaration cannot have a default value");
-				}
-				init_entity_foreign_library(c, e);
-
-				auto *fp = &c->info.foreigns;
-				HashKey key = hash_string(name);
-				Entity **found = map_get(fp, key);
-				if (found) {
-					Entity *f = *found;
-					TokenPos pos = f->token.pos;
-					Type *this_type = base_type(e->type);
-					Type *other_type = base_type(f->type);
-					if (!are_types_identical(this_type, other_type)) {
-						error(e->token,
-						      "Foreign entity '%.*s' previously declared elsewhere with a different type\n"
+						AstNode *fl = c->context.foreign_context.curr_library;
+						if (fl != nullptr) {
+							GB_ASSERT(fl->kind == AstNode_Ident);
+							entity->Variable.is_foreign = true;
+							entity->Variable.foreign_library_ident = fl;
+						}
+					} else {
+						TokenPos pos = found->token.pos;
+						error(token,
+						      "Redeclaration of '%.*s' in this scope\n"
 						      "\tat %.*s(%td:%td)",
-						      LIT(name), LIT(pos.file), pos.line, pos.column);
+						      LIT(str), LIT(pos.file), pos.line, pos.column);
+						entity = found;
 					}
-				} else {
-					map_set(fp, key, e);
 				}
-			}
-			add_entity(c, c->context.scope, e->identifier, e);
-		}
-
-		if (vd->is_using != 0) {
-			Token token = ast_node_token(node);
-			if (vd->type != nullptr && entity_count > 1) {
-				error(token, "'using' can only be applied to one variable of the same type");
-				// TODO(bill): Should a 'continue' happen here?
+				if (entity == nullptr) {
+					entity = make_entity_dummy_variable(c->allocator, c->global_scope, ast_node_token(name));
+				}
+				entity->parent_proc_decl = c->context.curr_proc_decl;
+				entities[entity_count++] = entity;
 			}
 
-			for (isize entity_index = 0; entity_index < entity_count; entity_index++) {
-				Entity *e = entities[entity_index];
-				if (e == nullptr) {
-					continue;
-				}
-				if (e->kind != Entity_Variable) {
-					continue;
-				}
-				bool is_immutable = e->Variable.is_immutable;
-				String name = e->token.string;
-				Type *t = base_type(type_deref(e->type));
+			if (new_name_count == 0) {
+				error(node, "No new declarations on the lhs");
+			}
 
-				if (is_blank_ident(name)) {
-					error(token, "'using' cannot be applied variable declared as '_'");
-				} else if (is_type_struct(t) || is_type_raw_union(t)) {
-					Scope *scope = scope_of_node(&c->info, t->Struct.node);
-					for_array(i, scope->elements.entries) {
-						Entity *f = scope->elements.entries[i].value;
-						if (f->kind == Entity_Variable) {
-							Entity *uvar = make_entity_using_variable(c->allocator, e, f->token, f->type);
-							uvar->Variable.is_immutable = is_immutable;
-							Entity *prev = scope_insert_entity(c->context.scope, uvar);
-							if (prev != nullptr) {
-								error(token, "Namespace collision while 'using' '%.*s' of: %.*s", LIT(name), LIT(prev->token.string));
-								return;
+			Type *init_type = nullptr;
+			if (vd->type != nullptr) {
+				init_type = check_type(c, vd->type, nullptr);
+				if (init_type == nullptr) {
+					init_type = t_invalid;
+				} else if (is_type_polymorphic(base_type(init_type))) {
+					gbString str = type_to_string(init_type);
+					error(vd->type, "Invalid use of a polymorphic type '%s' in variable declaration", str);
+					gb_string_free(str);
+					init_type = t_invalid;
+				} else if (is_type_empty_union(init_type)) {
+					gbString str = type_to_string(init_type);
+					error(vd->type, "An empty union '%s' cannot be instantiated in variable declaration", str);
+					gb_string_free(str);
+					init_type = t_invalid;
+				}
+			}
+
+
+			// TODO NOTE(bill): This technically checks things multple times
+			AttributeContext ac = make_attribute_context(c->context.foreign_context.link_prefix);
+			check_decl_attributes(c, vd->attributes, var_decl_attribute, &ac);
+
+			for (isize i = 0; i < entity_count; i++) {
+				Entity *e = entities[i];
+				GB_ASSERT(e != nullptr);
+				if (e->flags & EntityFlag_Visited) {
+					e->type = t_invalid;
+					continue;
+				}
+				e->flags |= EntityFlag_Visited;
+
+				if (e->type == nullptr) {
+					e->type = init_type;
+				}
+				ac.link_name = handle_link_name(c, e->token, ac.link_name, ac.link_prefix);
+				e->Variable.thread_local_model = ac.thread_local_model;
+
+				if (ac.link_name.len > 0) {
+					e->Variable.link_name = ac.link_name;
+				}
+			}
+
+			check_arity_match(c, vd);
+			check_init_variables(c, entities, entity_count, vd->values, str_lit("variable declaration"));
+
+			for (isize i = 0; i < entity_count; i++) {
+				Entity *e = entities[i];
+				if (e->Variable.is_foreign) {
+					if (vd->values.count > 0) {
+						error(e->token, "A foreign variable declaration cannot have a default value");
+					}
+
+					String name = e->token.string;
+					if (e->Variable.link_name.len > 0) {
+						name = e->Variable.link_name;
+					}
+
+					if (vd->values.count > 0) {
+						error(e->token, "A foreign variable declaration cannot have a default value");
+					}
+					init_entity_foreign_library(c, e);
+
+					auto *fp = &c->info.foreigns;
+					HashKey key = hash_string(name);
+					Entity **found = map_get(fp, key);
+					if (found) {
+						Entity *f = *found;
+						TokenPos pos = f->token.pos;
+						Type *this_type = base_type(e->type);
+						Type *other_type = base_type(f->type);
+						if (!are_types_identical(this_type, other_type)) {
+							error(e->token,
+							      "Foreign entity '%.*s' previously declared elsewhere with a different type\n"
+							      "\tat %.*s(%td:%td)",
+							      LIT(name), LIT(pos.file), pos.line, pos.column);
+						}
+					} else {
+						map_set(fp, key, e);
+					}
+				}
+				add_entity(c, c->context.scope, e->identifier, e);
+			}
+
+			if (vd->is_using != 0) {
+				Token token = ast_node_token(node);
+				if (vd->type != nullptr && entity_count > 1) {
+					error(token, "'using' can only be applied to one variable of the same type");
+					// TODO(bill): Should a 'continue' happen here?
+				}
+
+				for (isize entity_index = 0; entity_index < entity_count; entity_index++) {
+					Entity *e = entities[entity_index];
+					if (e == nullptr) {
+						continue;
+					}
+					if (e->kind != Entity_Variable) {
+						continue;
+					}
+					bool is_immutable = e->Variable.is_immutable;
+					String name = e->token.string;
+					Type *t = base_type(type_deref(e->type));
+
+					if (is_blank_ident(name)) {
+						error(token, "'using' cannot be applied variable declared as '_'");
+					} else if (is_type_struct(t) || is_type_raw_union(t)) {
+						Scope *scope = scope_of_node(&c->info, t->Struct.node);
+						for_array(i, scope->elements.entries) {
+							Entity *f = scope->elements.entries[i].value;
+							if (f->kind == Entity_Variable) {
+								Entity *uvar = make_entity_using_variable(c->allocator, e, f->token, f->type);
+								uvar->Variable.is_immutable = is_immutable;
+								Entity *prev = scope_insert_entity(c->context.scope, uvar);
+								if (prev != nullptr) {
+									error(token, "Namespace collision while 'using' '%.*s' of: %.*s", LIT(name), LIT(prev->token.string));
+									return;
+								}
 							}
 						}
+					} else {
+						// NOTE(bill): skip the rest to remove extra errors
+						error(token, "'using' can only be applied to variables of type struct or raw_union");
+						return;
 					}
-				} else {
-					// NOTE(bill): skip the rest to remove extra errors
-					error(token, "'using' can only be applied to variables of type struct or raw_union");
-					return;
 				}
 			}
+		} else {
+			// constant value declarations
 		}
 	case_end;
 	}
