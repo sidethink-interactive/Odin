@@ -43,7 +43,9 @@ ptr_to_bytes :: proc "contextless" (ptr: ^$T, len := 1) -> []byte {
 }
 
 any_to_bytes :: proc "contextless" (val: any) -> []byte {
-	return transmute([]byte)raw.Slice{val.data, val.type_info.size};
+	ti := type_info_of(val.typeid);
+	size := ti != nil ? ti.size : 0;
+	return transmute([]byte)raw.Slice{val.data, size};
 }
 
 
@@ -73,18 +75,18 @@ AllocationHeader :: struct {size: int};
 
 allocation_header_fill :: proc(header: ^AllocationHeader, data: rawptr, size: int) {
 	header.size = size;
-	ptr := cast(^uint)(header+1);
-	n := cast(^uint)data - ptr;
+	ptr := cast(^uint)(mem.ptr_offset(header, 1));
+	n := mem.ptr_sub(cast(^uint)data, ptr);
 
 	for i in 0..n {
-		(ptr+i)^ = ~uint(0);
+		mem.ptr_offset(ptr, i)^ = ~uint(0);
 	}
 }
 allocation_header :: proc(data: rawptr) -> ^AllocationHeader {
 	if data == nil do return nil;
 	p := cast(^uint)data;
-	for (p-1)^ == ~uint(0) do p = (p-1);
-	return cast(^AllocationHeader)(p-1);
+	for ptr_offset(p, -1)^ == ~uint(0) do p = ptr_offset(p, -1);
+	return (^AllocationHeader)(ptr_offset(p, -1));
 }
 
 
@@ -181,7 +183,7 @@ arena_allocator_proc :: proc(allocator_data: rawptr, mode: Allocator_Mode,
 		// NOTE(bill): Free all at once
 		// Use ArenaTempMemory if you want to free a block
 
-	case FreeAll:
+	case Free_All:
 		(^raw.Slice)(&arena.memory).len = 0;
 
 	case Resize:

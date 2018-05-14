@@ -173,16 +173,17 @@ GB_COMPARE_PROC(ast_node_cmp) {
 
 
 
-void init_declaration_info(DeclInfo *d, Scope *scope, DeclInfo *parent) {
+void init_decl_info(DeclInfo *d, Scope *scope, DeclInfo *parent) {
 	d->parent = parent;
 	d->scope  = scope;
-	ptr_set_init(&d->deps,                heap_allocator());
-	array_init  (&d->labels,              heap_allocator());
+	ptr_set_init(&d->deps,           heap_allocator());
+	ptr_set_init(&d->type_info_deps, heap_allocator());
+	array_init  (&d->labels,         heap_allocator());
 }
 
-DeclInfo *make_declaration_info(gbAllocator a, Scope *scope, DeclInfo *parent) {
+DeclInfo *make_decl_info(gbAllocator a, Scope *scope, DeclInfo *parent) {
 	DeclInfo *d = gb_alloc_item(a, DeclInfo);
-	init_declaration_info(d, scope, parent);
+	init_decl_info(d, scope, parent);
 	return d;
 }
 
@@ -482,6 +483,21 @@ void check_scope_usage(Checker *c, Scope *scope) {
 
 void add_dependency(DeclInfo *d, Entity *e) {
 	ptr_set_add(&d->deps, e);
+}
+void add_type_info_dependency(DeclInfo *d, Type *type) {
+	if (d == nullptr) {
+		GB_ASSERT(type == t_invalid);
+		return;
+	}
+	ptr_set_add(&d->type_info_deps, type);
+}
+
+void add_preload_dependency(Checker *c, char *name) {
+	String n = make_string_c(name);
+	Entity *e = scope_lookup_entity(c->global_scope, n);
+	GB_ASSERT(e != nullptr);
+	ptr_set_add(&c->context.decl->deps, e);
+	// add_type_info_type(c, e->type);
 }
 
 void add_declaration_dependency(Checker *c, Entity *e) {
@@ -843,6 +859,7 @@ void add_entity_definition(CheckerInfo *i, AstNode *identifier, Entity *entity) 
 		// NOTE(bill): Identifier has already been handled
 		return;
 	}
+	GB_ASSERT(entity != nullptr);
 
 	identifier->Ident.entity = entity;
 	entity->identifier = identifier;
@@ -952,8 +969,10 @@ void add_type_info_type(Checker *c, Type *t) {
 		return;
 	}
 
-	if (map_get(&c->info.type_info_map, hash_type(t)) != nullptr) {
+	auto found = map_get(&c->info.type_info_map, hash_type(t));
+	if (found != nullptr) {
 		// Types have already been added
+		add_type_info_dependency(c->context.decl, t);
 		return;
 	}
 
@@ -979,6 +998,7 @@ void add_type_info_type(Checker *c, Type *t) {
 
 	if (prev) {
 		// NOTE(bill): If a previous one exists already, no need to continue
+		add_type_info_dependency(c->context.decl, t);
 		return;
 	}
 
@@ -1003,6 +1023,8 @@ void add_type_info_type(Checker *c, Type *t) {
 		case Basic_any:
 			add_type_info_type(c, t_type_info_ptr);
 			add_type_info_type(c, t_rawptr);
+			break;
+		case Basic_typeid:
 			break;
 
 		case Basic_complex64:
@@ -1126,43 +1148,175 @@ void add_curr_ast_file(Checker *c, AstFile *file) {
 	}
 }
 
+void add_min_dep_type_info(Checker *c, Type *t) {
+	if (t == nullptr) {
+		return;
+	}
+	t = default_type(t);
+	if (is_type_bit_field_value(t)) {
+		t = default_bit_field_value_type(t);
+	}
+	if (is_type_untyped(t)) {
+		return; // Could be nil
+	}
+	if (is_type_polymorphic(base_type(t))) {
+		return;
+	}
 
-void add_dependency_to_map(PtrSet<Entity *> *map, CheckerInfo *info, Entity *entity) {
+	auto *set = &c->info.minimum_dependency_type_info_set;
+
+	isize ti_index = type_info_index(&c->info, t);
+	if (ptr_set_exists(set, ti_index)) {
+		// Type Already exists
+		return;
+	}
+	ptr_set_add(set, ti_index);
+
+	// Add nested types
+	if (t->kind == Type_Named) {
+		// NOTE(bill): Just in case
+		add_min_dep_type_info(c, t->Named.base);
+		return;
+	}
+
+	Type *bt = base_type(t);
+	add_min_dep_type_info(c, bt);
+
+	switch (bt->kind) {
+	case Type_Basic:
+		switch (bt->Basic.kind) {
+		case Basic_string:
+			add_min_dep_type_info(c, t_u8_ptr);
+			add_min_dep_type_info(c, t_int);
+			break;
+		case Basic_any:
+			add_min_dep_type_info(c, t_type_info_ptr);
+			add_min_dep_type_info(c, t_rawptr);
+			break;
+
+		case Basic_complex64:
+			add_min_dep_type_info(c, t_type_info_float);
+			add_min_dep_type_info(c, t_f32);
+			break;
+		case Basic_complex128:
+			add_min_dep_type_info(c, t_type_info_float);
+			add_min_dep_type_info(c, t_f64);
+			break;
+		}
+		break;
+
+	case Type_Pointer:
+		add_min_dep_type_info(c, bt->Pointer.elem);
+		break;
+
+	case Type_Array:
+		add_min_dep_type_info(c, bt->Array.elem);
+		add_min_dep_type_info(c, alloc_type_pointer(bt->Array.elem));
+		add_min_dep_type_info(c, t_int);
+		break;
+	case Type_DynamicArray:
+		add_min_dep_type_info(c, bt->DynamicArray.elem);
+		add_min_dep_type_info(c, alloc_type_pointer(bt->DynamicArray.elem));
+		add_min_dep_type_info(c, t_int);
+		add_min_dep_type_info(c, t_allocator);
+		break;
+	case Type_Slice:
+		add_min_dep_type_info(c, bt->Slice.elem);
+		add_min_dep_type_info(c, alloc_type_pointer(bt->Slice.elem));
+		add_min_dep_type_info(c, t_int);
+		break;
+
+	case Type_Enum:
+		add_min_dep_type_info(c, bt->Enum.base_type);
+		break;
+
+	case Type_Union:
+		add_min_dep_type_info(c, t_int);
+		add_min_dep_type_info(c, t_type_info_ptr);
+		for_array(i, bt->Union.variants) {
+			add_min_dep_type_info(c, bt->Union.variants[i]);
+		}
+		break;
+
+	case Type_Struct:
+		if (bt->Struct.scope != nullptr) {
+			for_array(i, bt->Struct.scope->elements.entries) {
+				Entity *e = bt->Struct.scope->elements.entries[i].value;
+				add_min_dep_type_info(c, e->type);
+			}
+		}
+		for_array(i, bt->Struct.fields) {
+			Entity *f = bt->Struct.fields[i];
+			add_min_dep_type_info(c, f->type);
+		}
+		break;
+
+	case Type_Map:
+		init_map_internal_types(bt);
+		add_min_dep_type_info(c, bt->Map.key);
+		add_min_dep_type_info(c, bt->Map.value);
+		add_min_dep_type_info(c, bt->Map.generated_struct_type);
+		break;
+
+	case Type_Tuple:
+		for_array(i, bt->Tuple.variables) {
+			Entity *var = bt->Tuple.variables[i];
+			add_min_dep_type_info(c, var->type);
+		}
+		break;
+
+	case Type_Proc:
+		add_min_dep_type_info(c, bt->Proc.params);
+		add_min_dep_type_info(c, bt->Proc.results);
+		break;
+	}
+}
+
+
+void add_dependency_to_set(Checker *c, Entity *entity) {
 	if (entity == nullptr) {
 		return;
 	}
+
+	CheckerInfo *info = &c->info;
+	auto *set = &info->minimum_dependency_set;
 
 	String name = entity->token.string;
 
 	if (entity->type != nullptr &&
 	    is_type_polymorphic(entity->type)) {
 
-		DeclInfo *decl = decl_info_of_entity(info, entity);
+		DeclInfo *decl = decl_info_of_entity(&c->info, entity);
 		if (decl != nullptr && decl->gen_proc_type == nullptr) {
 			return;
 		}
 	}
 
-	if (ptr_set_exists(map, entity)) {
+	if (ptr_set_exists(set, entity)) {
 		return;
 	}
 
 
-	ptr_set_add(map, entity);
+	ptr_set_add(set, entity);
 	DeclInfo *decl = decl_info_of_entity(info, entity);
 	if (decl == nullptr) {
 		return;
 	}
+	for_array(i, decl->type_info_deps.entries) {
+		Type *type = decl->type_info_deps.entries[i].ptr;
+		add_min_dep_type_info(c, type);
+	}
+
 	for_array(i, decl->deps.entries) {
 		Entity *e = decl->deps.entries[i].ptr;
-		add_dependency_to_map(map, info, e);
+		add_dependency_to_set(c, e);
 		if (e->kind == Entity_Procedure && e->Procedure.is_foreign) {
 			Entity *fl = e->Procedure.foreign_library;
 			if (fl != nullptr) {
 				GB_ASSERT_MSG(fl->kind == Entity_LibraryName &&
 				              fl->LibraryName.used,
 				              "%.*s", LIT(name));
-				add_dependency_to_map(map, info, fl);
+				add_dependency_to_set(c, fl);
 			}
 		}
 		if (e->kind == Entity_Variable && e->Variable.is_foreign) {
@@ -1171,34 +1325,59 @@ void add_dependency_to_map(PtrSet<Entity *> *map, CheckerInfo *info, Entity *ent
 				GB_ASSERT_MSG(fl->kind == Entity_LibraryName &&
 				              fl->LibraryName.used,
 				              "%.*s", LIT(name));
-				add_dependency_to_map(map, info, fl);
+				add_dependency_to_set(c, fl);
 			}
 		}
 	}
 }
 
-PtrSet<Entity *> generate_minimum_dependency_set(CheckerInfo *info, Entity *start) {
-	PtrSet<Entity *> map = {}; // Key: Entity *
-	ptr_set_init(&map, heap_allocator());
+void generate_minimum_dependency_set(Checker *c, Entity *start) {
+	ptr_set_init(&c->info.minimum_dependency_set, heap_allocator());
+	ptr_set_init(&c->info.minimum_dependency_type_info_set, heap_allocator());
 
-	for_array(i, info->definitions) {
-		Entity *e = info->definitions[i];
-		// if (e->scope->is_global && !is_type_poly_proc(e->type)) { // TODO(bill): is the check enough?
-		if (e->scope->is_global) { // TODO(bill): is the check enough?
-			if (e->type == nullptr || !is_type_poly_proc(e->type))  {
-				// NOTE(bill): Require runtime stuff
-				add_dependency_to_map(&map, info, e);
-			}
-		} else if (e->kind == Entity_Procedure && e->Procedure.is_export) {
-			add_dependency_to_map(&map, info, e);
-		} else if (e->kind == Entity_Variable && e->Procedure.is_export) {
-			add_dependency_to_map(&map, info, e);
+	String required_entities[] = {
+		str_lit("__mem_zero"),
+		str_lit("__init_context"),
+		str_lit("default_allocator"),
+
+		str_lit("__args__"),
+		str_lit("__type_table"),
+
+		str_lit("Type_Info"),
+		str_lit("Source_Code_Location"),
+		str_lit("Allocator"),
+		str_lit("Context"),
+	};
+	for (isize i = 0; i < gb_count_of(required_entities); i++) {
+		add_dependency_to_set(c, scope_lookup_entity(c->global_scope, required_entities[i]));
+	}
+
+	if (!build_context.no_bounds_check) {
+		String bounds_check_entities[] = {
+			str_lit("__bounds_check_error"),
+			str_lit("__slice_expr_error"),
+			str_lit("__dynamic_array_expr_error"),
+		};
+		for (isize i = 0; i < gb_count_of(bounds_check_entities); i++) {
+			add_dependency_to_set(c, scope_lookup_entity(c->global_scope, bounds_check_entities[i]));
 		}
 	}
 
-	add_dependency_to_map(&map, info, start);
+	for_array(i, c->info.definitions) {
+		Entity *e = c->info.definitions[i];
+		// if (e->scope->is_global && !is_type_poly_proc(e->type)) { // TODO(bill): is the check enough?
+		if (e->scope == universal_scope) { // TODO(bill): is the check enough?
+			if (e->type == nullptr || !is_type_poly_proc(e->type)) {
+				add_dependency_to_set(c, e);
+			}
+		} else if (e->kind == Entity_Procedure && e->Procedure.is_export) {
+			add_dependency_to_set(c, e);
+		} else if (e->kind == Entity_Variable && e->Procedure.is_export) {
+			add_dependency_to_set(c, e);
+		}
+	}
 
-	return map;
+	add_dependency_to_set(c, start);
 }
 
 bool is_entity_a_dependency(Entity *e) {
@@ -1373,9 +1552,9 @@ void init_preload(Checker *c) {
 		t_type_info_enum_value = type_info_enum_value->type;
 		t_type_info_enum_value_ptr = alloc_type_pointer(t_type_info_enum_value);
 
-		GB_ASSERT(tis->fields.count == 3);
+		GB_ASSERT(tis->fields.count == 4);
 
-		Entity *type_info_variant = tis->fields[2];
+		Entity *type_info_variant = tis->fields[3];
 		Type *tiv_type = type_info_variant->type;
 		GB_ASSERT(is_type_union(tiv_type));
 
@@ -1387,6 +1566,7 @@ void init_preload(Checker *c) {
 		t_type_info_string        = find_core_type(c, str_lit("Type_Info_String"));
 		t_type_info_boolean       = find_core_type(c, str_lit("Type_Info_Boolean"));
 		t_type_info_any           = find_core_type(c, str_lit("Type_Info_Any"));
+		t_type_info_typeid        = find_core_type(c, str_lit("Type_Info_Type_Id"));
 		t_type_info_pointer       = find_core_type(c, str_lit("Type_Info_Pointer"));
 		t_type_info_procedure     = find_core_type(c, str_lit("Type_Info_Procedure"));
 		t_type_info_array         = find_core_type(c, str_lit("Type_Info_Array"));
@@ -1407,6 +1587,7 @@ void init_preload(Checker *c) {
 		t_type_info_string_ptr        = alloc_type_pointer(t_type_info_string);
 		t_type_info_boolean_ptr       = alloc_type_pointer(t_type_info_boolean);
 		t_type_info_any_ptr           = alloc_type_pointer(t_type_info_any);
+		t_type_info_typeid_ptr        = alloc_type_pointer(t_type_info_typeid);
 		t_type_info_pointer_ptr       = alloc_type_pointer(t_type_info_pointer);
 		t_type_info_procedure_ptr     = alloc_type_pointer(t_type_info_procedure);
 		t_type_info_array_ptr         = alloc_type_pointer(t_type_info_array);
@@ -1770,7 +1951,7 @@ void check_collect_value_decl(Checker *c, AstNode *decl) {
 		Entity **entities = gb_alloc_array(c->allocator, Entity *, entity_cap);
 		DeclInfo *di = nullptr;
 		if (vd->values.count > 0) {
-			di = make_declaration_info(heap_allocator(), c->context.scope, c->context.decl);
+			di = make_decl_info(heap_allocator(), c->context.scope, c->context.decl);
 			di->entities = entities;
 			di->type_expr = vd->type;
 			di->init_expr = vd->values[0];
@@ -1814,7 +1995,7 @@ void check_collect_value_decl(Checker *c, AstNode *decl) {
 			DeclInfo *d = di;
 			if (d == nullptr || i > 0) {
 				AstNode *init_expr = value;
-				d = make_declaration_info(heap_allocator(), e->scope, c->context.decl);
+				d = make_decl_info(heap_allocator(), e->scope, c->context.decl);
 				d->type_expr = vd->type;
 				d->init_expr = init_expr;
 			}
@@ -1845,7 +2026,7 @@ void check_collect_value_decl(Checker *c, AstNode *decl) {
 			Token token = name->Ident.token;
 
 			AstNode *fl = c->context.foreign_context.curr_library;
-			DeclInfo *d = make_declaration_info(c->allocator, c->context.scope, c->context.decl);
+			DeclInfo *d = make_decl_info(c->allocator, c->context.scope, c->context.decl);
 			Entity *e = nullptr;
 
 			d->attributes = vd->attributes;
@@ -3064,7 +3245,7 @@ void check_parsed_files(Checker *c) {
 	for_array(i, c->parser->files) {
 		AstFile *f = c->parser->files[i];
 		Scope *scope = create_scope_from_file(c, f);
-		f->decl_info = make_declaration_info(c->allocator, f->scope, c->context.decl);
+		f->decl_info = make_decl_info(c->allocator, f->scope, c->context.decl);
 		HashKey key = hash_string(f->tokenizer.fullpath);
 		map_set(&c->file_scopes, key, scope);
 		map_set(&c->info.files, key, f);
@@ -3127,7 +3308,7 @@ void check_parsed_files(Checker *c) {
 	}
 
 	TIME_SECTION("generate minimum dependency set");
-	c->info.minimum_dependency_set = generate_minimum_dependency_set(&c->info, c->info.entry_point);
+	generate_minimum_dependency_set(c, c->info.entry_point);
 
 
 	TIME_SECTION("calculate global init order");

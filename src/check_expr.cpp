@@ -329,7 +329,7 @@ bool find_or_generate_polymorphic_procedure(Checker *c, Entity *base_entity, Typ
 	u64 tags = base_entity->Procedure.tags;
 	AstNode *ident = clone_ast_node(a, base_entity->identifier);
 	Token token = ident->Ident.token;
-	DeclInfo *d = make_declaration_info(c->allocator, scope, old_decl->parent);
+	DeclInfo *d = make_decl_info(c->allocator, scope, old_decl->parent);
 	d->gen_proc_type = final_proc_type;
 	d->type_expr = pl->type;
 	d->proc_lit = proc_lit;
@@ -346,9 +346,9 @@ bool find_or_generate_polymorphic_procedure(Checker *c, Entity *base_entity, Typ
 	{
 		Scope *s = entity->scope;
 		while (s != nullptr && s->file == nullptr) {
+			file = s->file;
 			s = s->parent;
 		}
-		file = s->file;
 	}
 
 	ProcedureInfo proc_info = {};
@@ -1232,6 +1232,7 @@ bool check_binary_op(Checker *c, Operand *o, Token op) {
 
 }
 
+
 bool check_representable_as_constant(Checker *c, ExactValue in_value, Type *type, ExactValue *out_value) {
 	if (in_value.kind == ExactValue_Invalid) {
 		// NOTE(bill): There's already been an error
@@ -1259,16 +1260,10 @@ bool check_representable_as_constant(Checker *c, ExactValue in_value, Type *type
 
 		i64 i = v.value_integer;
 		u64 u = bit_cast<u64>(i);
-		i64 s = 8*type_size_of(type);
-		u64 umax = ~cast(u64)0ull;
-		if (s < 64) {
-			umax = (1ull << cast(u64)s) - 1ull;
-		} else {
-			// IMPORTANT TODO(bill): I NEED A PROPER BIG NUMBER LIBRARY THAT CAN SUPPORT 128 bit floats
-			s = 64;
-		}
-		i64 imin = -1ll << (s-1ll);
-		i64 imax = (1ll << (s-1ll))-1ll;
+		i64 bit_size = type_size_of(type);
+		u64 umax = unsigned_integer_maxs[bit_size];
+		i64 imin = signed_integer_mins[bit_size];
+		i64 imax = signed_integer_maxs[bit_size];
 
 		switch (type->Basic.kind) {
 		case Basic_rune:
@@ -1283,7 +1278,7 @@ bool check_representable_as_constant(Checker *c, ExactValue in_value, Type *type
 		case Basic_u32:
 		case Basic_uint:
 		case Basic_uintptr:
-			return !(u < 0ull || u > umax);
+			return 0ull <= u && u <= umax;
 
 		case Basic_u64:
 			return 0ull <= i;
@@ -1488,7 +1483,7 @@ void check_comparison(Checker *c, Operand *x, Operand *y, TokenKind op) {
 	if (x->mode == Addressing_Type && y->mode == Addressing_Type) {
 		bool comp = are_types_identical(x->type, y->type);
 		switch (op) {
-		case Token_CmpEq: comp = comp;  break;
+		case Token_CmpEq: /* comp = comp; */ break;
 		case Token_NotEq: comp = !comp; break;
 		}
 		x->mode  = Addressing_Constant;
@@ -1561,9 +1556,38 @@ void check_comparison(Checker *c, Operand *x, Operand *y, TokenKind op) {
 		} else {
 			x->mode = Addressing_Value;
 
-
 			update_expr_type(c, x->expr, default_type(x->type), true);
 			update_expr_type(c, y->expr, default_type(y->type), true);
+
+			i64 size = 0;
+			if (!is_type_untyped(x->type)) size = gb_max(size, type_size_of(x->type));
+			if (!is_type_untyped(y->type)) size = gb_max(size, type_size_of(y->type));
+
+			if (is_type_string(x->type) || is_type_string(y->type)) {
+				switch (op) {
+				case Token_CmpEq: add_preload_dependency(c, "__string_eq"); break;
+				case Token_NotEq: add_preload_dependency(c, "__string_ne"); break;
+				case Token_Lt:    add_preload_dependency(c, "__string_lt"); break;
+				case Token_Gt:    add_preload_dependency(c, "__string_gt"); break;
+				case Token_LtEq:  add_preload_dependency(c, "__string_le"); break;
+				case Token_GtEq:  add_preload_dependency(c, "__string_gt"); break;
+				}
+			} else if (is_type_complex(x->type) || is_type_complex(y->type)) {
+				switch (op) {
+				case Token_CmpEq:
+					switch (8*size) {
+					case 64:  add_preload_dependency(c, "__complex64_eq");  break;
+					case 128: add_preload_dependency(c, "__complex128_eq"); break;
+					}
+					break;
+				case Token_NotEq:
+					switch (8*size) {
+					case 64:  add_preload_dependency(c, "__complex64_ne");  break;
+					case 128: add_preload_dependency(c, "__complex128_ne"); break;
+					}
+					break;
+				}
+			}
 		}
 
 		x->type = t_untyped_bool;
@@ -1820,6 +1844,9 @@ bool check_is_castable_to(Checker *c, Operand *operand, Type *y) {
 	}
 	// cstring -> string
 	if (src == t_cstring && dst == t_string) {
+		if (operand->mode != Addressing_Constant) {
+			add_preload_dependency(c, "__cstring_to_string");
+		}
 		return true;
 	}
 	// cstring -> ^u8
@@ -2841,6 +2868,7 @@ bool check_builtin_procedure(Checker *c, Operand *operand, AstNode *call, i32 id
 	case BuiltinProc_align_of:
 	case BuiltinProc_offset_of:
 	case BuiltinProc_type_info_of:
+	case BuiltinProc_typeid_of:
 		// NOTE(bill): The first arg may be a Type, this will be checked case by case
 		break;
 	default:
@@ -2878,6 +2906,7 @@ bool check_builtin_procedure(Checker *c, Operand *operand, AstNode *call, i32 id
 
 			operand->type = t_source_code_location;
 			operand->mode = Addressing_Value;
+			add_preload_dependency(c, "make_source_code_location");
 		} else if (name == "assert") {
 			if (ce->args.count != 1) {
 				error(call, "'#assert' expects at 1 argument, got %td", ce->args.count);
@@ -2920,6 +2949,9 @@ bool check_builtin_procedure(Checker *c, Operand *operand, AstNode *call, i32 id
 				type = t_untyped_integer;
 			} else {
 				mode = Addressing_Value;
+				if (is_type_cstring(op_type)) {
+					add_preload_dependency(c, "__cstring_len");
+				}
 			}
 		} else if (is_type_array(op_type)) {
 			Type *at = core_type(op_type);
@@ -3021,12 +3053,15 @@ bool check_builtin_procedure(Checker *c, Operand *operand, AstNode *call, i32 id
 		if (is_type_slice(type)) {
 			min_args = 2;
 			max_args = 2;
+			add_preload_dependency(c, "alloc");
 		} else if (is_type_map(type)) {
 			min_args = 1;
 			max_args = 2;
+			add_preload_dependency(c, "__dynamic_map_reserve");
 		} else if (is_type_dynamic_array(type)) {
 			min_args = 1;
 			max_args = 3;
+			add_preload_dependency(c, "__dynamic_array_make");
 		} else {
 			gbString str = type_to_string(type);
 			error(call, "Cannot 'make' %s; type must be a slice, map, or dynamic array", str);
@@ -3381,9 +3416,51 @@ bool check_builtin_procedure(Checker *c, Operand *operand, AstNode *call, i32 id
 
 		add_type_info_type(c, t);
 
+		if (is_operand_value(o) && is_type_typeid(t)) {
+			add_preload_dependency(c, "__type_info_of");
+		} else if (o.mode != Addressing_Type) {
+			error(expr, "Expected a type or typeid for 'type_info_of'");
+			return false;
+		}
+
 		operand->mode = Addressing_Value;
 		operand->type = t_type_info_ptr;
+		break;
+	}
 
+	case BuiltinProc_typeid_of: {
+		// proc typeid_of(Type) -> typeid
+		if (c->context.scope->is_global) {
+			compiler_error("'typeid_of' Cannot be declared within a #shared_global_scope due to how the internals of the compiler works");
+		}
+
+		// NOTE(bill): The type information may not be setup yet
+		init_preload(c);
+		AstNode *expr = ce->args[0];
+		Operand o = {};
+		check_expr_or_type(c, &o, expr);
+		if (o.mode == Addressing_Invalid) {
+			return false;
+		}
+		Type *t = o.type;
+		if (t == nullptr || t == t_invalid || is_type_polymorphic(operand->type)) {
+			error(ce->args[0], "Invalid argument for 'typeid_of'");
+			return false;
+		}
+		t = default_type(t);
+
+		add_type_info_type(c, t);
+
+		t = base_type(t);
+		if (is_operand_value(o) && are_types_identical(t, t_type_info_ptr)) {
+			add_preload_dependency(c, "__typeid_of");
+		} else if (o.mode != Addressing_Type) {
+			error(expr, "Expected a type or type info for 'typeid_of'");
+			return false;
+		}
+
+		operand->mode = Addressing_Value;
+		operand->type = t_typeid;
 		break;
 	}
 
@@ -3640,7 +3717,7 @@ break;
 	#endif
 	case BuiltinProc_expand_to_tuple: {
 		Type *type = base_type(operand->type);
-		if (!is_type_struct(type) &
+		if (!is_type_struct(type) &&
 		    !is_type_union(type)) {
 			gbString type_str = type_to_string(operand->type);
 			error(call, "Expected a struct or union type, got '%s'", type_str);
@@ -3723,6 +3800,13 @@ break;
 				gb_string_free(type_a);
 				return false;
 			}
+
+			{
+				Type *bt = base_type(a.type);
+				if (bt == t_f32) add_preload_dependency(c, "__min_f32");
+				if (bt == t_f64) add_preload_dependency(c, "__min_f64");
+			}
+
 		}
 
 
@@ -3793,6 +3877,12 @@ break;
 				gb_string_free(type_a);
 				return false;
 			}
+
+			{
+				Type *bt = base_type(a.type);
+				if (bt == t_f32) add_preload_dependency(c, "__max_f32");
+				if (bt == t_f64) add_preload_dependency(c, "__max_f64");
+			}
 		}
 
 
@@ -3829,6 +3919,14 @@ break;
 			}
 		} else {
 			operand->mode = Addressing_Value;
+
+			{
+				Type *bt = base_type(operand->type);
+				if (bt == t_f32)        add_preload_dependency(c, "__abs_f32");
+				if (bt == t_f64)        add_preload_dependency(c, "__abs_f64");
+				if (bt == t_complex64)  add_preload_dependency(c, "__abs_complex64");
+				if (bt == t_complex128) add_preload_dependency(c, "__abs_complex128");
+			}
 		}
 
 		if (is_type_complex(operand->type)) {
@@ -3923,6 +4021,18 @@ break;
 				gb_string_free(type_y);
 				gb_string_free(type_x);
 				return false;
+			}
+
+			{
+				Type *bt = base_type(x.type);
+				if (bt == t_f32) {
+					add_preload_dependency(c, "__min_f32");
+					add_preload_dependency(c, "__max_f32");
+				}
+				if (bt == t_f64) {
+					add_preload_dependency(c, "__min_f64");
+					add_preload_dependency(c, "__max_f64");
+				}
 			}
 		}
 
@@ -4255,6 +4365,9 @@ CALL_ARGUMENT_CHECKER(check_call_arguments_internal) {
 						err = CallArgumentError_WrongTypes;
 					}
 					score += s;
+					if (is_type_any(elem)) {
+						add_type_info_type(c, o.type);
+					}
 				}
 			}
 		}
@@ -5149,10 +5262,6 @@ ExprKind check_expr_base_internal(Checker *c, Operand *o, AstNode *node, Type *t
 			o->mode       = Addressing_Builtin;
 			o->builtin_id = BuiltinProc_type_of;
 			break;
-		case Token_type_info_of:
-			o->mode       = Addressing_Builtin;
-			o->builtin_id = BuiltinProc_type_info_of;
-			break;
 
 		default:
 			error(node, "Illegal implicit name '%.*s'", LIT(i->string));
@@ -5231,7 +5340,7 @@ ExprKind check_expr_base_internal(Checker *c, Operand *o, AstNode *node, Type *t
 		Type *type = alloc_type(Type_Proc);
 		check_open_scope(c, pl->type);
 		{
-			decl = make_declaration_info(c->allocator, c->context.scope, c->context.decl);
+			decl = make_decl_info(c->allocator, c->context.scope, c->context.decl);
 			decl->proc_lit  = node;
 			c->context.decl = decl;
 
@@ -5534,6 +5643,9 @@ ExprKind check_expr_base_internal(Checker *c, Operand *o, AstNode *node, Type *t
 				elem_type = t->DynamicArray.elem;
 				context_name = str_lit("dynamic array literal");
 				is_constant = false;
+
+				add_preload_dependency(c, "__dynamic_array_reserve");
+				add_preload_dependency(c, "__dynamic_array_append");
 			} else {
 				GB_PANIC("unreachable");
 			}
@@ -5598,7 +5710,7 @@ ExprKind check_expr_base_internal(Checker *c, Operand *o, AstNode *node, Type *t
 				break; // NOTE(bill): No need to init
 			}
 			{ // Checker values
-				Type *field_types[2] = {t_rawptr, t_type_info_ptr};
+				Type *field_types[2] = {t_rawptr, t_typeid};
 				isize field_count = 2;
 				if (cl->elems[0]->kind == AstNode_FieldValue) {
 					bool fields_visited[2] = {};
@@ -5692,6 +5804,8 @@ ExprKind check_expr_base_internal(Checker *c, Operand *o, AstNode *node, Type *t
 				}
 			}
 
+			add_preload_dependency(c, "__dynamic_map_reserve");
+			add_preload_dependency(c, "__dynamic_map_set");
 			break;
 		}
 
@@ -5813,6 +5927,8 @@ ExprKind check_expr_base_internal(Checker *c, Operand *o, AstNode *node, Type *t
 			o->expr = node;
 			return kind;
 		}
+
+		add_preload_dependency(c, "__type_assertion_check");
 	case_end;
 
 	case_ast_node(tc, TypeCast, node);
@@ -5911,6 +6027,9 @@ ExprKind check_expr_base_internal(Checker *c, Operand *o, AstNode *node, Type *t
 			o->mode = Addressing_MapIndex;
 			o->type = t->Map.value;
 			o->expr = node;
+
+			add_preload_dependency(c, "__dynamic_map_get");
+			add_preload_dependency(c, "__dynamic_map_set");
 			return Expr_Expr;
 		}
 

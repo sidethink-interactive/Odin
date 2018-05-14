@@ -342,6 +342,7 @@ void ir_print_type(irFileBuffer *f, irModule *m, Type *t, bool in_struct) {
 		case Basic_string:  ir_write_str_lit(f, "%..string");           return;
 		case Basic_cstring: ir_write_str_lit(f, "i8*");                 return;
 
+		case Basic_typeid:  ir_write_str_lit(f, "%..typeid");           return;
 		}
 		break;
 
@@ -537,7 +538,6 @@ void ir_print_exact_value(irFileBuffer *f, irModule *m, ExactValue value, Type *
 		return;
 	}
 
-
 	switch (value.kind) {
 	case ExactValue_Bool:
 		if (value.value_bool) {
@@ -652,7 +652,11 @@ void ir_print_exact_value(irFileBuffer *f, irModule *m, ExactValue value, Type *
 	}
 	case ExactValue_Pointer:
 		if (value.value_pointer == 0) {
-			ir_write_str_lit(f, "null");
+			if (is_type_typeid(type)) {
+				ir_write_str_lit(f, "0");
+			} else {
+				ir_write_str_lit(f, "null");
+			}
 		} else {
 			ir_write_str_lit(f, "inttoptr (");
 			ir_print_type(f, m, t_int);
@@ -949,6 +953,23 @@ void ir_print_value(irFileBuffer *f, irModule *m, irValue *value, Type *type_hin
 	case irValue_Param:
 		ir_print_encoded_local(f, value->Param.entity->token.string);
 		break;
+	case irValue_SourceCodeLocation: {
+		irValue *file      = value->SourceCodeLocation.file;
+		irValue *line      = value->SourceCodeLocation.line;
+		irValue *column    = value->SourceCodeLocation.column;
+		irValue *procedure = value->SourceCodeLocation.procedure;
+
+		ir_write_byte(f, '{');
+		ir_print_type(f, m, t_string); ir_write_byte(f, ' '); ir_print_value(f, m, file, t_string);
+		ir_write_string(f, str_lit(", "));
+		ir_print_type(f, m, t_int);    ir_write_byte(f, ' '); ir_print_value(f, m, line, t_int);
+		ir_write_string(f, str_lit(", "));
+		ir_print_type(f, m, t_int);    ir_write_byte(f, ' '); ir_print_value(f, m, column, t_int);
+		ir_write_string(f, str_lit(", "));
+		ir_print_type(f, m, t_string); ir_write_byte(f, ' '); ir_print_value(f, m, procedure, t_string);
+		ir_write_byte(f, '}');
+		break;
+	}
 	case irValue_Proc:
 		ir_print_encoded_global(f, value->Proc.name, ir_print_is_proc_global(m, &value->Proc));
 		break;
@@ -1344,9 +1365,15 @@ void ir_print_instr(irFileBuffer *f, irModule *m, irValue *value) {
 			case Token_Or:     ir_write_str_lit(f, "or");   break;
 			case Token_Xor:    ir_write_str_lit(f, "xor");  break;
 			case Token_Shl:    ir_write_str_lit(f, "shl");  break;
-			case Token_Shr:    ir_write_str_lit(f, "lshr"); break;
 			case Token_Mul:    ir_write_str_lit(f, "mul");  break;
 			case Token_Not:    ir_write_str_lit(f, "xor");  break;
+			case Token_Shr:
+				if (is_type_unsigned(elem_type)) {
+					ir_write_str_lit(f, "lshr");
+				} else {
+					ir_write_str_lit(f, "ashr");
+				}
+				break;
 
 			case Token_AndNot: GB_PANIC("Token_AndNot Should never be called");
 
@@ -1737,11 +1764,16 @@ void print_llvm_ir(irGen *ir) {
 	ir_print_encoded_local(f, str_lit("..complex128"));
 	ir_write_str_lit(f, " = type {double, double} ; Basic_complex128\n");
 
+	ir_print_encoded_local(f, str_lit("..typeid"));
+	ir_write_str_lit(f, " = type ");
+	ir_print_type(f, m, t_uintptr);
+	ir_write_str_lit(f, " ; Basic_typeid\n");
+
 	ir_print_encoded_local(f, str_lit("..any"));
 	ir_write_str_lit(f, " = type {");
 	ir_print_type(f, m, t_rawptr);
 	ir_write_str_lit(f, ", ");
-	ir_print_type(f, m, t_type_info_ptr);
+	ir_print_type(f, m, t_typeid);
 	ir_write_str_lit(f, "} ; Basic_any\n");
 
 	ir_write_str_lit(f, "declare void @llvm.dbg.declare(metadata, metadata, metadata) nounwind readnone \n");
@@ -1841,7 +1873,11 @@ void print_llvm_ir(irGen *ir) {
 			if (g->value != nullptr) {
 				ir_print_value(f, m, g->value, g->entity->type);
 			} else {
-				ir_write_string(f, str_lit("zeroinitializer"));
+				if (ir_type_has_default_values(g->entity->type)) {
+					ir_print_exact_value(f, m, empty_exact_value, g->entity->type);
+				} else {
+					ir_write_string(f, str_lit("zeroinitializer"));
+				}
 			}
 		}
 		ir_write_byte(f, '\n');

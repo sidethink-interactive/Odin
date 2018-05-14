@@ -190,7 +190,6 @@ Type *check_assignment_variable(Checker *c, Operand *lhs, Operand *rhs) {
 
 	// NOTE(bill): Ignore assignments to '_'
 	if (is_blank_ident(node)) {
-		add_entity_definition(&c->info, node, nullptr);
 		check_assignment(c, rhs, nullptr, str_lit("assignment to '_' identifier"));
 		if (rhs->mode == Addressing_Invalid) {
 			return nullptr;
@@ -269,8 +268,7 @@ Type *check_assignment_variable(Checker *c, Operand *lhs, Operand *rhs) {
 					}
 					i64 imax = 1ll << (cast(i64)lhs_bits-1ll);
 
-					bool ok = false;
-					ok = !(u < 0 || u > umax);
+					bool ok = !(u < 0 || u > umax);
 
 					if (ok) {
 						return rhs->type;
@@ -871,6 +869,7 @@ void check_type_switch_stmt(Checker *c, AstNode *node, u32 mod_flags) {
 
 	check_expr(c, &x, rhs);
 	check_assignment(c, &x, nullptr, str_lit("type switch expression"));
+	add_type_info_type(c, x.type);
 
 	TypeSwitchKind switch_kind = check_valid_type_switch_type(x.type);
 	if (switch_kind == TypeSwitch_Invalid) {
@@ -962,8 +961,10 @@ void check_type_switch_stmt(Checker *c, AstNode *node, u32 mod_flags) {
 						continue;
 					}
 					case_type = y.type;
+					add_type_info_type(c, y.type);
 				} else if (switch_kind == TypeSwitch_Any) {
 					case_type = y.type;
+					add_type_info_type(c, y.type);
 				} else {
 					GB_PANIC("Unknown type to type switch statement");
 				}
@@ -1411,6 +1412,7 @@ void check_stmt_internal(Checker *c, AstNode *node, u32 flags) {
 					if (is_type_string(t)) {
 						val0 = t_rune;
 						val1 = t_int;
+						add_preload_dependency(c, "__string_decode_rune");
 					}
 					break;
 				case Type_Array:

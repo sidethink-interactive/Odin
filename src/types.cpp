@@ -38,6 +38,8 @@ enum BasicKind {
 	Basic_cstring, // ^u8
 	Basic_any,     // rawptr + ^Type_Info
 
+	Basic_typeid,
+
 	Basic_UntypedBool,
 	Basic_UntypedInteger,
 	Basic_UntypedFloat,
@@ -283,6 +285,8 @@ gb_global Type basic_types[] = {
 	{Type_Basic, {Basic_cstring,           BasicFlag_String,                          -1, STR_LIT("cstring")}},
 	{Type_Basic, {Basic_any,               0,                                         -1, STR_LIT("any")}},
 
+	{Type_Basic, {Basic_typeid,            0,                                         -1, STR_LIT("typeid")}},
+
 	{Type_Basic, {Basic_UntypedBool,       BasicFlag_Boolean    | BasicFlag_Untyped,   0, STR_LIT("untyped bool")}},
 	{Type_Basic, {Basic_UntypedInteger,    BasicFlag_Integer    | BasicFlag_Untyped,   0, STR_LIT("untyped integer")}},
 	{Type_Basic, {Basic_UntypedFloat,      BasicFlag_Float      | BasicFlag_Untyped,   0, STR_LIT("untyped float")}},
@@ -329,6 +333,8 @@ gb_global Type *t_string          = &basic_types[Basic_string];
 gb_global Type *t_cstring         = &basic_types[Basic_cstring];
 gb_global Type *t_any             = &basic_types[Basic_any];
 
+gb_global Type *t_typeid          = &basic_types[Basic_typeid];
+
 gb_global Type *t_untyped_bool       = &basic_types[Basic_UntypedBool];
 gb_global Type *t_untyped_integer    = &basic_types[Basic_UntypedInteger];
 gb_global Type *t_untyped_float      = &basic_types[Basic_UntypedFloat];
@@ -360,6 +366,7 @@ gb_global Type *t_type_info_rune              = nullptr;
 gb_global Type *t_type_info_float             = nullptr;
 gb_global Type *t_type_info_complex           = nullptr;
 gb_global Type *t_type_info_any               = nullptr;
+gb_global Type *t_type_info_typeid            = nullptr;
 gb_global Type *t_type_info_string            = nullptr;
 gb_global Type *t_type_info_boolean           = nullptr;
 gb_global Type *t_type_info_pointer           = nullptr;
@@ -381,6 +388,7 @@ gb_global Type *t_type_info_float_ptr         = nullptr;
 gb_global Type *t_type_info_complex_ptr       = nullptr;
 gb_global Type *t_type_info_quaternion_ptr    = nullptr;
 gb_global Type *t_type_info_any_ptr           = nullptr;
+gb_global Type *t_type_info_typeid_ptr        = nullptr;
 gb_global Type *t_type_info_string_ptr        = nullptr;
 gb_global Type *t_type_info_boolean_ptr       = nullptr;
 gb_global Type *t_type_info_pointer_ptr       = nullptr;
@@ -903,6 +911,10 @@ bool is_type_any(Type *t) {
 	t = base_type(t);
 	return (t->kind == Type_Basic && t->Basic.kind == Basic_any);
 }
+bool is_type_typeid(Type *t) {
+	t = base_type(t);
+	return (t->kind == Type_Basic && t->Basic.kind == Basic_typeid);
+}
 bool is_type_untyped_nil(Type *t) {
 	t = base_type(t);
 	return (t->kind == Type_Basic && t->Basic.kind == Basic_UntypedNil);
@@ -1073,7 +1085,7 @@ bool is_type_polymorphic(Type *t) {
 
 
 bool type_has_undef(Type *t) {
-	t = base_type(t);
+	// t = base_type(t);
 	return true;
 }
 
@@ -1086,6 +1098,8 @@ bool type_has_nil(Type *t) {
 		case Basic_any:
 			return true;
 		case Basic_cstring:
+			return true;
+		case Basic_typeid:
 			return true;
 		}
 		return false;
@@ -1128,6 +1142,8 @@ bool is_type_comparable(Type *t) {
 			return true;
 		case Basic_cstring:
 			return false;
+		case Basic_typeid:
+			return true;
 		}
 		return true;
 	case Type_Pointer:
@@ -1334,7 +1350,7 @@ Type *default_type(Type *type) {
 	return type;
 }
 
-
+/*
 // NOTE(bill): Valid Compile time execution #run type
 bool is_type_cte_safe(Type *type) {
 	type = default_type(base_type(type));
@@ -1392,7 +1408,7 @@ bool is_type_cte_safe(Type *type) {
 
 	return false;
 }
-
+ */
 i64 union_variant_index(Type *u, Type *v) {
 	u = base_type(u);
 	GB_ASSERT(u->kind == Type_Union);
@@ -1580,9 +1596,6 @@ Selection lookup_field_from_index(Type *type, i64 index) {
 }
 
 
-gb_global Entity *entity__any_data       = nullptr;
-gb_global Entity *entity__any_type_info  = nullptr;
-
 Entity *current_scope_lookup_entity(Scope *s, String name);
 
 Selection lookup_field_with_selection(Type *type_, String field_name, bool is_type, Selection sel) {
@@ -1606,21 +1619,17 @@ Selection lookup_field_with_selection(Type *type_, String field_name, bool is_ty
 			// IMPORTANT TODO(bill): Should these members be available to should I only allow them with
 			// `Raw_Any` type?
 			String data_str = str_lit("data");
-			String type_info_str = str_lit("type_info");
-			if (entity__any_data == nullptr) {
-				entity__any_data = alloc_entity_field(nullptr, make_token_ident(data_str), t_rawptr, false, 0);
-			}
-			if (entity__any_type_info == nullptr) {
-				entity__any_type_info = alloc_entity_field(nullptr, make_token_ident(type_info_str), t_type_info_ptr, false, 1);
-			}
+			String typeid_str = str_lit("typeid");
+			gb_local_persist Entity *entity__any_data = alloc_entity_field(nullptr, make_token_ident(data_str), t_rawptr, false, 0);
+			gb_local_persist Entity *entity__any_typeid = alloc_entity_field(nullptr, make_token_ident(typeid_str), t_typeid, false, 1);
 
 			if (field_name == data_str) {
 				selection_add_index(&sel, 0);
 				sel.entity = entity__any_data;;
 				return sel;
-			} else if (field_name == type_info_str) {
+			} else if (field_name == typeid_str) {
 				selection_add_index(&sel, 1);
-				sel.entity = entity__any_type_info;
+				sel.entity = entity__any_typeid;
 				return sel;
 			}
 		#endif
@@ -1776,8 +1785,7 @@ struct TypePath {
 
 
 void type_path_init(TypePath *tp) {
-	// TODO(bill): Use an allocator that uses a backing array if it can and then use alternative allocator when exhausted
-	array_init(&tp->path, heap_allocator());
+	tp->path.allocator = heap_allocator();
 }
 
 void type_path_free(TypePath *tp) {
@@ -1884,6 +1892,7 @@ i64 type_align_of_internal(Type *t, TypePath *path) {
 		case Basic_string:  return build_context.word_size;
 		case Basic_cstring: return build_context.word_size;
 		case Basic_any:     return build_context.word_size;
+		case Basic_typeid:  return build_context.word_size;
 
 		case Basic_int: case Basic_uint: case Basic_uintptr: case Basic_rawptr:
 			return build_context.word_size;
@@ -2085,6 +2094,7 @@ i64 type_size_of_internal(Type *t, TypePath *path) {
 		case Basic_string:  return 2*build_context.word_size;
 		case Basic_cstring: return build_context.word_size;
 		case Basic_any:     return 2*build_context.word_size;
+		case Basic_typeid:  return build_context.word_size;
 
 		case Basic_int: case Basic_uint: case Basic_uintptr: case Basic_rawptr:
 			return build_context.word_size;

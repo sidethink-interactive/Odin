@@ -86,6 +86,7 @@ enum BuiltinProcId {
 	BuiltinProc_offset_of,
 	BuiltinProc_type_of,
 	BuiltinProc_type_info_of,
+	BuiltinProc_typeid_of,
 
 	BuiltinProc_swizzle,
 
@@ -128,6 +129,7 @@ gb_global BuiltinProc builtin_procs[BuiltinProc_COUNT] = {
 	{STR_LIT("offset_of"),        2, false, Expr_Expr},
 	{STR_LIT("type_of"),          1, false, Expr_Expr},
 	{STR_LIT("type_info_of"),     1, false, Expr_Expr},
+	{STR_LIT("typeid_of"),        1, false, Expr_Expr},
 
 	{STR_LIT("swizzle"),          1, true,  Expr_Expr},
 
@@ -186,6 +188,7 @@ struct DeclInfo {
 	Type *            gen_proc_type; // Precalculated
 
 	PtrSet<Entity *>  deps;
+	PtrSet<Type *>    type_info_deps;
 	Array<BlockLabel> labels;
 };
 
@@ -303,9 +306,11 @@ struct CheckerInfo {
 	Array<Type *>         type_info_types;
 	Map<isize>            type_info_map;   // Key: Type *
 
+
 	Scope *               init_scope;
 	Entity *              entry_point;
 	PtrSet<Entity *>      minimum_dependency_set;
+	PtrSet<isize>         minimum_dependency_type_info_set;
 };
 
 struct Checker {
@@ -374,11 +379,11 @@ void      add_type_and_value      (CheckerInfo *i, AstNode *expression, Addressi
 void      add_entity_use          (Checker *c, AstNode *identifier, Entity *entity);
 void      add_implicit_entity     (Checker *c, AstNode *node, Entity *e);
 void      add_entity_and_decl_info(Checker *c, AstNode *identifier, Entity *e, DeclInfo *d);
+void      add_type_info_type      (Checker *c, Type *t);
 
 void check_add_import_decl(Checker *c, AstNodeImportDecl *id);
 void check_add_export_decl(Checker *c, AstNodeExportDecl *ed);
 void check_add_foreign_import_decl(Checker *c, AstNode *decl);
-
 
 
 bool check_arity_match(Checker *c, AstNodeValueDecl *vd, bool is_global = false);

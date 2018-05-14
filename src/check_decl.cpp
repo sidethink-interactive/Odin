@@ -199,7 +199,7 @@ bool is_type_distinct(AstNode *node) {
 	case AstNode_ArrayType:
 	case AstNode_DynamicArrayType:
 	case AstNode_MapType:
-		return true;
+		return false;
 	}
 	return false;
 }
@@ -1036,8 +1036,13 @@ void check_proc_body(Checker *c, Token token, DeclInfo *decl, Type *type, AstNod
 			Entity *e = decl->deps.entries[i].ptr;
 			ptr_set_add(&decl->parent->deps, e);
 		}
+		for_array(i, decl->type_info_deps.entries) {
+			Type *t = decl->type_info_deps.entries[i].ptr;
+			ptr_set_add(&decl->parent->type_info_deps, t);
+		}
 	}
 }
+
 
 
 

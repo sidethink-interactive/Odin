@@ -1714,7 +1714,6 @@ AstNode *parse_operand(AstFile *f, bool lhs) {
 	case Token_size_of:
 	case Token_align_of:
 	case Token_offset_of:
-	case Token_type_info_of:
 		return parse_call_expr(f, ast_implicit(f, advance_token(f)));
 
 
@@ -3026,6 +3025,13 @@ AstNode *parse_field_list(AstFile *f, isize *name_count_, u32 allowed_flags, Tok
 		if (default_value != nullptr && names.count > 1) {
 			syntax_error(f->curr_token, "Default parameters can only be applied to single values");
 		}
+
+	#if defined(NO_DEFAULT_STRUCT_VALUES)
+		if (allowed_flags == FieldFlag_Struct && default_value != nullptr) {
+			syntax_error(default_value, "Default parameters are not allowed for structs");
+			default_value = nullptr;
+		}
+	#endif
 
 		if (type != nullptr && type->kind == AstNode_Ellipsis) {
 			if (seen_ellipsis) syntax_error(type, "Extra variadic parameter after ellipsis");
@@ -4380,7 +4386,7 @@ ParseFileError parse_files(Parser *p, String init_filename) {
 	p->init_fullpath = init_fullpath;
 
 	// IMPORTANT TODO(bill): Figure out why this doesn't work on *nix sometimes
-#if USE_THREADED_PARSER && defined(GB_SYSTEM_WINDOWS)
+#if defined(GB_SYSTEM_WINDOWS)
 	isize thread_count = gb_max(build_context.thread_count, 1);
 	if (thread_count > 1) {
 		isize volatile curr_import_index = 0;

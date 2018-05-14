@@ -1,6 +1,6 @@
-#define USE_THREADED_PARSER 1
 // #define NO_ARRAY_BOUNDS_CHECK
 // #define NO_POINTER_ARITHMETIC
+// #define NO_DEFAULT_STRUCT_VALUES
 
 void debugger_breakpoint() {
 	// When debugging the compiler,
