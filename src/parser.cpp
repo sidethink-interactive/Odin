@@ -1373,7 +1373,7 @@ void expect_semicolon(AstFile *f, AstNode *s) {
 
 
 AstNode *        parse_expr(AstFile *f, bool lhs);
-AstNode *        parse_proc_type(AstFile *f, Token proc_token);
+AstNode *        parse_proc_type(AstFile *f, Token proc_token, bool must_be_proc);
 Array<AstNode *> parse_stmt_list(AstFile *f);
 AstNode *        parse_stmt(AstFile *f);
 AstNode *        parse_body(AstFile *f);
@@ -1656,7 +1656,9 @@ AstNode *parse_operand_proc(AstFile *f, bool lhs, Token token, bool must_be_proc
 
 	if(!must_be_proc && !is_parens_a_proc(f)) return nullptr;
 
-	AstNode *type = parse_proc_type(f, token);
+	AstNode *type = parse_proc_type(f, token, must_be_proc);
+	// TODO(zachary): There is probably a @Leak here when we abort.
+	if(!must_be_proc && type == nullptr) return nullptr;
 
 	if (f->allow_type && f->expr_level < 0) {
 		return type;
@@ -1725,8 +1727,19 @@ AstNode *parse_operand(AstFile *f, bool lhs) {
 
 	case Token_OpenParen: {
 
-		AstNode *proc = parse_operand_proc(f, lhs, f->curr_token);
-		if(proc != nullptr) return proc;
+		// We're going to try to parse this like a proc, but if it fails,
+		// we want to revert the tokenizer's state to what it was
+		// before the proc parsing began.
+		{
+			auto backup_tok = f->curr_token;
+			auto backup_toki = f->curr_token_index;
+
+			AstNode *proc = parse_operand_proc(f, lhs, f->curr_token, false);
+			if(proc != nullptr) return proc;
+
+			f->curr_token = backup_tok;
+			f->curr_token_index = backup_toki;
+		}
 
 		Token open, close;
 		// NOTE(bill): Skip the Paren Expression
@@ -2681,7 +2694,7 @@ ProcCallingConvention string_to_calling_convention(String s) {
 	return ProcCC_Invalid;
 }
 
-AstNode *parse_proc_type(AstFile *f, Token proc_token) {
+AstNode *parse_proc_type(AstFile *f, Token proc_token, bool must_be_proc) {
 	AstNode *params = nullptr;
 	AstNode *results = nullptr;
 
@@ -2706,7 +2719,22 @@ AstNode *parse_proc_type(AstFile *f, Token proc_token) {
 
 	expect_token(f, Token_OpenParen);
 	params = parse_field_list(f, nullptr, FieldFlag_Signature, Token_CloseParen, true, true);
-	expect_token_after(f, Token_CloseParen, "parameter list");
+	
+	// This is basically expect_token_after, but we're only aborting if must_be_proc is true.
+	Token prev = f->curr_token;
+	if (prev.kind != Token_CloseParen) {
+		if(must_be_proc) {
+		String p = token_strings[prev.kind];
+		syntax_error(f->curr_token, "Expected '%.*s' after %s, got '%.*s'",
+		             LIT(token_strings[Token_CloseParen]),
+		             "parameter list",
+		             LIT(p));
+		} else {
+			return nullptr;
+		}
+	}
+	advance_token(f);
+
 	results = parse_results(f);
 
 	u64 tags = 0;

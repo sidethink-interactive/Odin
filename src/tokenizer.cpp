@@ -201,6 +201,9 @@ void init_global_error_collector(void) {
 void warning_va(Token token, char *fmt, va_list va) {
 	gb_mutex_lock(&global_error_collector.mutex);
 	global_error_collector.warning_count++;
+
+	debugger_breakpoint();
+
 	// NOTE(bill): Duplicate error, skip it
 	if (token.pos.line == 0) {
 		gb_printf_err("Error: %s\n", gb_bprintf_va(fmt, va));
@@ -217,6 +220,9 @@ void warning_va(Token token, char *fmt, va_list va) {
 void error_va(Token token, char *fmt, va_list va) {
 	gb_mutex_lock(&global_error_collector.mutex);
 	global_error_collector.count++;
+	
+	debugger_breakpoint();
+
 	// NOTE(bill): Duplicate error, skip it
 	if (token.pos.line == 0) {
 		gb_printf_err("Error: %s\n", gb_bprintf_va(fmt, va));
@@ -232,6 +238,9 @@ void error_va(Token token, char *fmt, va_list va) {
 void error_no_newline_va(Token token, char *fmt, va_list va) {
 	gb_mutex_lock(&global_error_collector.mutex);
 	global_error_collector.count++;
+	
+	debugger_breakpoint();
+
 	// NOTE(bill): Duplicate error, skip it
 	if (token.pos.line == 0) {
 		gb_printf_err("Error: %s", gb_bprintf_va(fmt, va));
@@ -248,6 +257,9 @@ void error_no_newline_va(Token token, char *fmt, va_list va) {
 void syntax_error_va(Token token, char *fmt, va_list va) {
 	gb_mutex_lock(&global_error_collector.mutex);
 	global_error_collector.count++;
+	
+	debugger_breakpoint();
+
 	// NOTE(bill): Duplicate error, skip it
 	if (global_error_collector.prev != token.pos) {
 		global_error_collector.prev = token.pos;
@@ -314,6 +326,8 @@ void compiler_error(char *fmt, ...) {
 	va_start(va, fmt);
 	gb_printf_err("Internal Compiler Error: %s\n",
 	              gb_bprintf_va(fmt, va));
+	
+	debugger_breakpoint();
 	va_end(va);
 	gb_exit(1);
 }

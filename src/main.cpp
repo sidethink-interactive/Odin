@@ -2,6 +2,12 @@
 // #define NO_ARRAY_BOUNDS_CHECK
 // #define NO_POINTER_ARITHMETIC
 
+void debugger_breakpoint() {
+	// When debugging the compiler,
+	// place a breakpoint here if you
+	// want to capture parsing and lexing errors.
+}
+
 #include "common.cpp"
 #include "timings.cpp"
 #include "build_settings.cpp"
@@ -1031,7 +1037,7 @@ int main(int arg_count, char **arg_ptr) {
 		remove_temp_files(output_base);
 
 		if (run_output) {
-			system_exec_command_line_app("odin run", false, "%.*s", LIT(output_base));
+			system_exec_command_line_app("odin run", false, "./%.*s", LIT(output_base));
 		}
 	#endif
 

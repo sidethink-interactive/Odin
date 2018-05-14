@@ -272,9 +272,24 @@ shared/
 *.ll
 *.bc
 
-examples/demo
-examples/demo.exe
-examples/factorial
-examples/factorial.exe
-examples/hello
-examples/hello.exe
+# all examples
+demo
+demo.exe
+factorial
+factorial.exe
+hello
+hello.exe
+ported_odin_demo
+ported_odin_demo.exe
+punity
+punity.exe
+demo001
+demo001.exe
+demo002
+demo002.exe
+demo005
+demo005.exe
+demo006
+demo006.exe
+old_runtime
+old_runtime.exe
