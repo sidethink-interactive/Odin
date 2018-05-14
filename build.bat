@@ -42,12 +42,7 @@ del *.ilk > NUL 2> NUL
 
 cl %compiler_settings% "src\main.cpp" ^
 	/link %linker_settings% -OUT:%exe_name% ^
-<<<<<<< HEAD
-	&& helm run examples/demo.helm -opt=0
-	rem && helm docs core/fmt.helm
-=======
-	&& odin run examples/demo.odin
->>>>>>> b32af841c56b1bc530b13bd2c6ad55547b4ef021
+	&& helm run examples/demo.helm
 
 del *.obj > NUL 2> NUL
 

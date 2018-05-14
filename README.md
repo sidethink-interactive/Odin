@@ -1,23 +1,20 @@
-<<<<<<< HEAD
-<img src="misc/logo.png" alt="Helm logo" height="74">
-=======
-<p align="center">
-    <img src="misc/logo-slim.png" alt="Odin logo" height="120">
-    <br/>
-    A fast, concise, readable, pragmatic and open sourced programming language.
-    <br/>
-    <br/>
-    <a href="https://github.com/odin-lang/odin/releases/latest">
-        <img src="https://img.shields.io/github/release/odin-lang/odin.svg">
-    </a>
-    <a href="https://github.com/odin-lang/odin/releases/latest">
-        <img src="https://img.shields.io/badge/platforms-Windows%20|%20Linux%20|%20macOS-green.svg">
-    </a>
-    <a href="https://github.com/odin-lang/odin/blob/master/LICENSE">
-        <img src="https://img.shields.io/github/license/odin-lang/odin.svg">
-    </a>
-</p>
->>>>>>> b32af841c56b1bc530b13bd2c6ad55547b4ef021
+<table>
+  <tr>
+    <td align="center">
+      <img src="https://github.com/sidethink-interactive/helm-lang/raw/master/misc/logo.png" height="74">
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://github.com/sidethink-interactive/helm-lang/releases/latest">
+        <img src="https://img.shields.io/badge/platforms-Windows%20|%20Linux%20|%20macOS-pink.svg">
+      </a>
+      <a href="https://github.com/sidethink-interactive/helm-lang/blob/master/LICENSE">
+        <img src="https://img.shields.io/github/license/sidethink-interactive/helm-lang.svg">
+      </a>
+    </td>
+  </tr>
+</table>
 
 # The Helm Programming Language
 
@@ -26,18 +23,22 @@ any Helm code should look similar to any other Helm code whilst allowing program
 
 Helm is one of those things where you can learn it extremely quickly, but there's always something new you can learn about it.
 
-<<<<<<< HEAD
-## This project is a fork of [Odin](https://github.com/odin-lang/Odin).
-Odin is a lower-level programming language attempting to replace C. Helm is building on Odin, attempting to create the C++ to Odin's C. That said,
-we don't want to make the same mistakes that C++ made. Convenience and complex features are fine, but not if they sacrifice the legibility of the code.
+<blockquote>
+	<h2>This project is a fork of <a href="https://github.com/odin-lang/Odin" title="odin-lang/Odin">Odin</a>.</h2>
+	<p>
+		Odin is a lower-level programming language attempting to replace C. Helm is building on Odin, attempting to create the C++ to Odin's C. That said,
+		we don't want to make the same mistakes that C++ made. Convenience and complex features are fine, but not if they sacrifice the legibility of the code.
+	</p>
+	<p>
+		If you're looking for something a little more low-level with less bells and whistles, definitely check out <a href="https://github.com/odin-lang/Odin" title="odin-lang/Odin">Odin</a> and
+		see if it's a better fit for your project!
+	</p>
+</blockquote>
 
-If you're looking for something a little more low-level with less bells and whistles, definitely check out [Odin](https://github.com/odin-lang/Odin) and
-see if it's a better fit for your project!
-=======
 ```go
-import "core:fmt.odin"
+import "core:fmt"
 
-main :: proc() {
+main :: () {
 	program := "+ + * 😃 - /";
 	accumulator := 0;
 
@@ -55,21 +56,7 @@ main :: proc() {
 	fmt.printf("The program \"%s\" calculates the value %d\n",
 	           program, accumulator);
 }
-
 ```
-
-## Demonstrations:
-* First Talk & Demo
-	- [Talk](https://youtu.be/TMCkT-uASaE?t=338)
-	- [Demo](https://youtu.be/TMCkT-uASaE?t=1800)
-	- [Q&A](https://youtu.be/TMCkT-uASaE?t=5749)
-* [Composition & Refactorability](https://www.youtube.com/watch?v=n1wemZfcbXM)
-* [Introspection, Modules, and Record Layout](https://www.youtube.com/watch?v=UFq8rhWhx4s)
-* [push_allocator & Minimal Dependency Building](https://www.youtube.com/watch?v=f_LGVOAMb78)
-* [when, for & procedure overloading](https://www.youtube.com/watch?v=OzeOekzyZK8)
-* [Context Types, Unexported Entities, Labelled Branches](https://www.youtube.com/watch?v=CkHVwT1Qk-g)
-* [Bit Fields, i128 & u128, Syntax Changes](https://www.youtube.com/watch?v=NlTutcLyF64)
->>>>>>> b32af841c56b1bc530b13bd2c6ad55547b4ef021
 
 ## Requirements to build and run
 
@@ -83,7 +70,7 @@ main :: proc() {
 - MacOS
 	* x86-64
 	* LLVM explicitly installed (`brew install llvm`)
-	* XCode installed (for the linker)
+	* XCode tools installed for the linker (`xcode-select --install` will install just the tools, or you can grab XCode from the App Store)
 
 - GNU/Linux
 	* x86-64
@@ -98,7 +85,7 @@ main :: proc() {
 
 ## Roadmap
 
-Not in any particular order and not be implemented
+Not in any particular order and may never be implemented
 
 * Compile Time Execution (CTE)
 	- More metaprogramming madness
