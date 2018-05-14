@@ -3,16 +3,16 @@
 	TOKEN_KIND(Token_EOF,     "EOF"), \
 	TOKEN_KIND(Token_Comment, "Comment"), \
 \
-TOKEN_KIND(Token__LiteralBegin, "_LiteralBegin"), \
+TOKEN_KIND(Token__LiteralBegin, ""), \
 	TOKEN_KIND(Token_Ident,     "identifier"), \
 	TOKEN_KIND(Token_Integer,   "integer"), \
 	TOKEN_KIND(Token_Float,     "float"), \
 	TOKEN_KIND(Token_Imag,      "imaginary"), \
 	TOKEN_KIND(Token_Rune,      "rune"), \
 	TOKEN_KIND(Token_String,    "string"), \
-TOKEN_KIND(Token__LiteralEnd,   "_LiteralEnd"), \
+TOKEN_KIND(Token__LiteralEnd,   ""), \
 \
-TOKEN_KIND(Token__OperatorBegin, "_OperatorBegin"), \
+TOKEN_KIND(Token__OperatorBegin, ""), \
 	TOKEN_KIND(Token_Eq,       "="), \
 	TOKEN_KIND(Token_Not,      "!"), \
 	TOKEN_KIND(Token_Hash,     "#"), \
@@ -36,7 +36,7 @@ TOKEN_KIND(Token__OperatorBegin, "_OperatorBegin"), \
 	TOKEN_KIND(Token_CmpAnd, "&&"), \
 	TOKEN_KIND(Token_CmpOr,  "||"), \
 \
-TOKEN_KIND(Token__AssignOpBegin, "_AssignOpBegin"), \
+TOKEN_KIND(Token__AssignOpBegin, ""), \
 	TOKEN_KIND(Token_AddEq,    "+="), \
 	TOKEN_KIND(Token_SubEq,    "-="), \
 	TOKEN_KIND(Token_MulEq,    "*="), \
@@ -51,20 +51,20 @@ TOKEN_KIND(Token__AssignOpBegin, "_AssignOpBegin"), \
 	TOKEN_KIND(Token_ShrEq,    ">>="), \
 	TOKEN_KIND(Token_CmpAndEq, "&&="), \
 	TOKEN_KIND(Token_CmpOrEq,  "||="), \
-TOKEN_KIND(Token__AssignOpEnd, "_AssignOpEnd"), \
+TOKEN_KIND(Token__AssignOpEnd, ""), \
 	TOKEN_KIND(Token_ArrowRight,       "->"), \
 	TOKEN_KIND(Token_ArrowLeft,        "<-"), \
 	TOKEN_KIND(Token_DoubleArrowRight, "=>"), \
 	TOKEN_KIND(Token_Undef,            "---"), \
 \
-TOKEN_KIND(Token__ComparisonBegin, "_ComparisonBegin"), \
+TOKEN_KIND(Token__ComparisonBegin, ""), \
 	TOKEN_KIND(Token_CmpEq, "=="), \
 	TOKEN_KIND(Token_NotEq, "!="), \
 	TOKEN_KIND(Token_Lt,    "<"), \
 	TOKEN_KIND(Token_Gt,    ">"), \
 	TOKEN_KIND(Token_LtEq,  "<="), \
 	TOKEN_KIND(Token_GtEq,  ">="), \
-TOKEN_KIND(Token__ComparisonEnd, "_ComparisonEnd"), \
+TOKEN_KIND(Token__ComparisonEnd, ""), \
 \
 	TOKEN_KIND(Token_OpenParen,     "("),   \
 	TOKEN_KIND(Token_CloseParen,    ")"),   \
@@ -79,9 +79,9 @@ TOKEN_KIND(Token__ComparisonEnd, "_ComparisonEnd"), \
 	TOKEN_KIND(Token_Ellipsis,      "..."), \
 	TOKEN_KIND(Token_HalfClosed,    ".."),  \
 	TOKEN_KIND(Token_BackSlash,     "\\"),  \
-TOKEN_KIND(Token__OperatorEnd, "_OperatorEnd"), \
+TOKEN_KIND(Token__OperatorEnd, ""), \
 \
-TOKEN_KIND(Token__KeywordBegin, "_KeywordBegin"), \
+TOKEN_KIND(Token__KeywordBegin, ""), \
 	TOKEN_KIND(Token_import,                 "import"),                 \
 	TOKEN_KIND(Token_export,                 "export"),                 \
 	TOKEN_KIND(Token_foreign,                "foreign"),                \
@@ -109,8 +109,10 @@ TOKEN_KIND(Token__KeywordBegin, "_KeywordBegin"), \
 	TOKEN_KIND(Token_map,                    "map"),                    \
 	TOKEN_KIND(Token_static,                 "static"),                 \
 	TOKEN_KIND(Token_dynamic,                "dynamic"),                \
+	TOKEN_KIND(Token_auto_cast,              "auto_cast"),              \
 	TOKEN_KIND(Token_cast,                   "cast"),                   \
 	TOKEN_KIND(Token_transmute,              "transmute"),              \
+	TOKEN_KIND(Token_distinct,               "distinct"),               \
 	TOKEN_KIND(Token_using,                  "using"),                  \
 	TOKEN_KIND(Token_inline,                 "inline"),                 \
 	TOKEN_KIND(Token_no_inline,              "no_inline"),              \
@@ -124,7 +126,7 @@ TOKEN_KIND(Token__KeywordBegin, "_KeywordBegin"), \
 	TOKEN_KIND(Token_asm,                    "asm"),                    \
 	TOKEN_KIND(Token_yield,                  "yield"),                  \
 	TOKEN_KIND(Token_await,                  "await"),                  \
-TOKEN_KIND(Token__KeywordEnd, "_KeywordEnd"), \
+TOKEN_KIND(Token__KeywordEnd, ""), \
 	TOKEN_KIND(Token_Count, "")
 
 enum TokenKind {
@@ -170,8 +172,8 @@ bool operator>=(TokenPos const &a, TokenPos const &b) { return token_pos_cmp(a, 
 
 struct Token {
 	TokenKind kind;
-	String string;
-	TokenPos pos;
+	String    string;
+	TokenPos  pos;
 };
 
 Token empty_token = {Token_Invalid};
@@ -200,7 +202,9 @@ void warning_va(Token token, char *fmt, va_list va) {
 	gb_mutex_lock(&global_error_collector.mutex);
 	global_error_collector.warning_count++;
 	// NOTE(bill): Duplicate error, skip it
-	if (global_error_collector.prev != token.pos) {
+	if (token.pos.line == 0) {
+		gb_printf_err("Error: %s\n", gb_bprintf_va(fmt, va));
+	} else if (global_error_collector.prev != token.pos) {
 		global_error_collector.prev = token.pos;
 		gb_printf_err("%.*s(%td:%td) Warning: %s\n",
 		              LIT(token.pos.file), token.pos.line, token.pos.column,
@@ -214,17 +218,32 @@ void error_va(Token token, char *fmt, va_list va) {
 	gb_mutex_lock(&global_error_collector.mutex);
 	global_error_collector.count++;
 	// NOTE(bill): Duplicate error, skip it
-	if (global_error_collector.prev != token.pos) {
+	if (token.pos.line == 0) {
+		gb_printf_err("Error: %s\n", gb_bprintf_va(fmt, va));
+	} else if (global_error_collector.prev != token.pos) {
 		global_error_collector.prev = token.pos;
 		gb_printf_err("%.*s(%td:%td) %s\n",
 		              LIT(token.pos.file), token.pos.line, token.pos.column,
 		              gb_bprintf_va(fmt, va));
-	} else if (token.pos.line == 0) {
-		gb_printf_err("Error: %s\n", gb_bprintf_va(fmt, va));
 	}
-
 	gb_mutex_unlock(&global_error_collector.mutex);
 }
+
+void error_no_newline_va(Token token, char *fmt, va_list va) {
+	gb_mutex_lock(&global_error_collector.mutex);
+	global_error_collector.count++;
+	// NOTE(bill): Duplicate error, skip it
+	if (token.pos.line == 0) {
+		gb_printf_err("Error: %s", gb_bprintf_va(fmt, va));
+	} else if (global_error_collector.prev != token.pos) {
+		global_error_collector.prev = token.pos;
+		gb_printf_err("%.*s(%td:%td) %s",
+		              LIT(token.pos.file), token.pos.line, token.pos.column,
+		              gb_bprintf_va(fmt, va));
+	}
+	gb_mutex_unlock(&global_error_collector.mutex);
+}
+
 
 void syntax_error_va(Token token, char *fmt, va_list va) {
 	gb_mutex_lock(&global_error_collector.mutex);
@@ -236,7 +255,7 @@ void syntax_error_va(Token token, char *fmt, va_list va) {
 		              LIT(token.pos.file), token.pos.line, token.pos.column,
 		              gb_bprintf_va(fmt, va));
 	} else if (token.pos.line == 0) {
-		gb_printf_err("Error: %s\n", gb_bprintf_va(fmt, va));
+		gb_printf_err("Syntax Error: %s\n", gb_bprintf_va(fmt, va));
 	}
 
 	gb_mutex_unlock(&global_error_collector.mutex);
@@ -383,14 +402,14 @@ void tokenizer_err(Tokenizer *t, char *msg, ...) {
 	if (column < 1) {
 		column = 1;
 	}
-
-	gb_printf_err("%.*s(%td:%td) Syntax error: ", LIT(t->fullpath), t->line_count, column);
+	Token token = {};
+	token.pos.file = t->fullpath;
+	token.pos.line = t->line_count;
+	token.pos.column = column;
 
 	va_start(va, msg);
-	gb_printf_err_va(msg, va);
+	syntax_error_va(token, msg, va);
 	va_end(va);
-
-	gb_printf_err("\n");
 
 	t->error_count++;
 }
@@ -518,6 +537,9 @@ Token scan_number_to_token(Tokenizer *t, bool seen_decimal_point) {
 	token.pos.column = t->curr-t->line+1;
 
 	if (seen_decimal_point) {
+		token.string.text -= 1;
+		token.string.len  += 1;
+		token.pos.column -= 1;
 		token.kind = Token_Float;
 		scan_mantissa(t, 10);
 		goto exponent;
@@ -556,14 +578,32 @@ Token scan_number_to_token(Tokenizer *t, bool seen_decimal_point) {
 			if (t->curr - prev <= 2) {
 				token.kind = Token_Invalid;
 			}
-		} /* else if (t->curr_rune == 'h') { // Hexadecimal Float
+		} else if (t->curr_rune == 'h') { // Hexadecimal Float
 			token.kind = Token_Float;
 			advance_to_next_rune(t);
 			scan_mantissa(t, 16);
 			if (t->curr - prev <= 2) {
 				token.kind = Token_Invalid;
+			} else {
+				u8 *start = prev+2;
+				isize n = t->curr - start;
+				isize digit_count = 0;
+				for (isize i = 0; i < n; i++) {
+					if (start[i] != '_') {
+						digit_count += 1;
+					}
+				}
+				switch (digit_count) {
+				case 8:
+				case 16:
+					break;
+				default:
+					tokenizer_err(t, "Invalid hexadecimal float, expected 8 or 16 digits, got %td", digit_count);
+					break;
+				}
 			}
-		} */ else {
+
+		} else {
 			seen_decimal_point = false;
 			scan_mantissa(t, 10);
 
@@ -888,7 +928,6 @@ Token tokenizer_get_token(Tokenizer *t) {
 		} break;
 
 		case '.':
-			token.kind = Token_Period; // Default
 			if (t->curr_rune == '.') { // Could be an ellipsis
 				advance_to_next_rune(t);
 				token.kind = Token_HalfClosed;
@@ -896,6 +935,10 @@ Token tokenizer_get_token(Tokenizer *t) {
 					advance_to_next_rune(t);
 					token.kind = Token_Ellipsis;
 				}
+			} else if ('0' <= t->curr_rune && t->curr_rune <= '9') {
+				token = scan_number_to_token(t, true);
+			} else {
+				token.kind = Token_Period;
 			}
 			break;
 

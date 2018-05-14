@@ -1,13 +1,17 @@
-when ODIN_OS == "windows" do export "core:os_windows.helm";
-when ODIN_OS == "osx"     do export "core:os_x.helm";
-when ODIN_OS == "linux"   do export "core:os_linux.helm";
-when ODIN_OS == "essence" do export "core:os_essence.helm";
+when ODIN_OS == "windows" do export "core:os/windows.helm";
+when ODIN_OS == "osx"     do export "core:os/macos.helm";
+when ODIN_OS == "linux"   do export "core:os/linux.helm";
 
 import "mem.helm";
 
 write_string :: proc(fd: Handle, str: string) -> (int, Errno) {
 	return write(fd, cast([]byte)str);
 }
+
+write_byte :: proc(fd: Handle, b: byte) -> (int, Errno) {
+	return write(fd, []byte{b});
+}
+
 
 read_entire_file :: proc(name: string) -> (data: []byte, success: bool) {
 	fd, err := open(name, O_RDONLY, 0);
@@ -25,7 +29,7 @@ read_entire_file :: proc(name: string) -> (data: []byte, success: bool) {
 		return nil, true;
 	}
 
-	data := make([]byte, int(length));
+	data = make([]byte, int(length));
 	if data == nil {
 		return nil, false;
 	}

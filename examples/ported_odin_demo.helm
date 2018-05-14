@@ -1,23 +1,23 @@
-import "core:fmt.helm"
-import "core:strconv.helm"
-import "core:mem.helm"
-import "core:bits.helm"
-import "core:hash.helm"
-import "core:math.helm"
-import "core:math/rand.helm"
-import "core:os.helm"
-import "core:raw.helm"
-import "core:sort.helm"
-import "core:strings.helm"
-import "core:types.helm"
-import "core:utf16.helm"
-import "core:utf8.helm"
+import "core:fmt"
+import "core:strconv"
+import "core:mem"
+import "core:bits"
+import "core:hash"
+import "core:math"
+import "core:math/rand"
+import "core:os"
+import "core:raw"
+import "core:sort"
+import "core:strings"
+import "core:types"
+import "core:utf16"
+import "core:utf8"
 
 // File scope `when` statements
 when ODIN_OS == "windows" {
-	import "core:atomics.helm"
-	import "core:thread.helm"
-	import win32 "core:sys/windows.helm"
+	import "core:atomics"
+	import "core:thread"
+	import win32 "core:sys/windows"
 }
 
 @(link_name="general_stuff")
@@ -641,7 +641,7 @@ array_programming :: proc() {
 }
 
 
-using println in import "core:fmt.odin"
+using println in import "core:fmt"
 
 using_in :: proc() {
 	fmt.println("# using in");

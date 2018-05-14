@@ -1,8 +1,37 @@
 import "core:fmt"
 
+foreign import libc "system:c"
+
+// This procedure is a test to make sure the parser can pick up signatures like
+// proc :: () ---;
+// in an extern block.
+foreign export {
+    @(calling_convention = "c", link_name = "weird_test")
+    testing_extern_procs_with_no_args_or_rets :: () {
+        fmt.println("Testing extern procs with no args or returns.");
+    }
+}
+
+foreign libc {
+    @(calling_convention = "c", link_name = "puts")
+    put_string :: (str: cstring) ---;
+    weird_test :: () ---;
+}
+
 main :: () {
     fmt.println("Working!", other_proc("a", "b"));
+    put_string("test\n\x00");
+    weird_test();
 }
+
+// A regression in this commit is that "calling_convention" is missing.
+
+/*
+Odin-style is still supported.
+c_proc :: proc "c" (x, a: string) -> bool {
+
+}
+*/
 
 @(calling_convention = "c")
 other_proc :: (x, a: string) -> bool {

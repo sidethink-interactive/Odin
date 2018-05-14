@@ -100,8 +100,7 @@ void check_init_variables(Checker *c, Entity **lhs, isize lhs_count, Array<AstNo
 
 	// NOTE(bill): If there is a bad syntax error, rhs > lhs which would mean there would need to be
 	// an extra allocation
-	Array<Operand> operands = {};
-	array_init(&operands, c->tmp_allocator, 2*lhs_count);
+	auto operands = array_make<Operand>(c->tmp_allocator, 0, 2*lhs_count);
 	check_unpack_arguments(c, lhs, lhs_count, &operands, inits, true);
 
 	isize rhs_count = operands.count;
@@ -170,22 +169,57 @@ void check_init_constant(Checker *c, Entity *e, Operand *operand) {
 	e->Constant.value = operand->value;
 }
 
-AstNode *remove_type_alias(AstNode *node) {
+
+bool is_type_distinct(AstNode *node) {
+	for (;;) {
+		if (node == nullptr) {
+			return false;
+		}
+		if (node->kind == AstNode_ParenExpr) {
+			node = node->ParenExpr.expr;
+		} else if (node->kind == AstNode_HelperType) {
+			node = node->HelperType.type;
+		} else {
+			break;
+		}
+	}
+
+	switch (node->kind) {
+	case AstNode_DistinctType:
+		return true;
+
+	case AstNode_StructType:
+	case AstNode_UnionType:
+	case AstNode_EnumType:
+	case AstNode_BitFieldType:
+	case AstNode_ProcType:
+		return true;
+
+	case AstNode_PointerType:
+	case AstNode_ArrayType:
+	case AstNode_DynamicArrayType:
+	case AstNode_MapType:
+		return true;
+	}
+	return false;
+}
+
+AstNode *remove_type_alias_clutter(AstNode *node) {
 	for (;;) {
 		if (node == nullptr) {
 			return nullptr;
 		}
 		if (node->kind == AstNode_ParenExpr) {
 			node = node->ParenExpr.expr;
-		} else if (node->kind == AstNode_AliasType) {
-			node = node->AliasType.type;
+		} else if (node->kind == AstNode_DistinctType) {
+			node = node->DistinctType.type;
 		} else {
 			return node;
 		}
 	}
 }
 
-void check_type_decl(Checker *c, Entity *e, AstNode *type_expr, Type *def, bool is_alias) {
+void check_type_decl(Checker *c, Entity *e, AstNode *type_expr, Type *def) {
 	GB_ASSERT(e->type == nullptr);
 
 	DeclInfo *decl = decl_info_of_entity(&c->info, e);
@@ -193,28 +227,39 @@ void check_type_decl(Checker *c, Entity *e, AstNode *type_expr, Type *def, bool 
 		error(decl->attributes[0], "Attributes are not allowed on type declarations");
 	}
 
-	AstNode *te = remove_type_alias(type_expr);
+
+
+	bool is_distinct = is_type_distinct(type_expr);
+	AstNode *te = remove_type_alias_clutter(type_expr);
 	e->type = t_invalid;
 	String name = e->token.string;
-	Type *named = make_type_named(c->allocator, name, nullptr, e);
+	Type *named = alloc_type_named(name, nullptr, e);
 	named->Named.type_name = e;
 	if (def != nullptr && def->kind == Type_Named) {
 		def->Named.base = named;
 	}
 	e->type = named;
 
-	Type *bt = check_type(c, te, named);
+	check_type_path_push(c, e);
+	Type *bt = check_type_expr(c, te, named);
+	check_type_path_pop(c);
+
 	named->Named.base = base_type(bt);
-	if (is_alias) {
-		if (is_type_named(bt)) {
-			e->type = bt;
-			e->TypeName.is_type_alias = true;
-		} else {
-			gbString str = type_to_string(bt);
-			error(type_expr, "Type alias declaration with a non-named type '%s'", str);
-			gb_string_free(str);
-		}
+	if (!is_distinct) {
+		e->type = bt;
+		named->Named.base = bt;
+		e->TypeName.is_type_alias = true;
 	}
+	// if (is_alias) {
+	// 	if (is_type_named(bt)) {
+	// 		e->type = bt;
+	// 		e->TypeName.is_type_alias = true;
+	// 	} else {
+	// 		gbString str = type_to_string(bt);
+	// 		error(type_expr, "Type alias declaration with a non-named type '%s'", str);
+	// 		gb_string_free(str);
+	// 	}
+	// }
 }
 
 void check_const_decl(Checker *c, Entity *e, AstNode *type_expr, AstNode *init, Type *named_type) {
@@ -254,17 +299,18 @@ void check_const_decl(Checker *c, Entity *e, AstNode *type_expr, AstNode *init, 
 		switch (operand.mode) {
 		case Addressing_Type: {
 			e->kind = Entity_TypeName;
+			e->type = nullptr;
 
 			DeclInfo *d = c->context.decl;
 			if (d->type_expr != nullptr) {
 				error(e->token, "A type declaration cannot have an type parameter");
 			}
 			d->type_expr = d->init_expr;
-			check_type_decl(c, e, d->type_expr, named_type, false);
+			check_type_decl(c, e, d->type_expr, named_type);
 			return;
 		}
 
-	// NOTE(bill): Check to see if the expression it to be aliases
+		// NOTE(bill): Check to see if the expression it to be aliases
 		case Addressing_Builtin:
 			if (e->type != nullptr) {
 				error(type_expr, "A constant alias of a built-in procedure may not have a type initializer");
@@ -359,8 +405,8 @@ bool are_signatures_similar_enough(Type *a_, Type *b_) {
 		if (is_type_integer(x) && is_type_integer(y)) {
 			GB_ASSERT(x->kind == Type_Basic);
 			GB_ASSERT(y->kind == Type_Basic);
-			i64 sx = type_size_of(heap_allocator(), x);
-			i64 sy = type_size_of(heap_allocator(), y);
+			i64 sx = type_size_of(x);
+			i64 sy = type_size_of(y);
 			if (sx == sy) continue;
 		}
 
@@ -376,8 +422,8 @@ bool are_signatures_similar_enough(Type *a_, Type *b_) {
 		if (is_type_integer(x) && is_type_integer(y)) {
 			GB_ASSERT(x->kind == Type_Basic);
 			GB_ASSERT(y->kind == Type_Basic);
-			i64 sx = type_size_of(heap_allocator(), x);
-			i64 sy = type_size_of(heap_allocator(), y);
+			i64 sx = type_size_of(x);
+			i64 sy = type_size_of(y);
 			if (sx == sy) continue;
 		}
 
@@ -424,6 +470,7 @@ void init_entity_foreign_library(Checker *c, Entity *e) {
 		} else {
 			// TODO(bill): Extra stuff to do with library names?
 			*foreign_library = found;
+			found->LibraryName.used = true;
 			add_entity_use(c, ident, found);
 		}
 	}
@@ -458,7 +505,7 @@ void check_proc_decl(Checker *c, Entity *e, DeclInfo *d) {
 	if (d->gen_proc_type != nullptr) {
 		proc_type = d->gen_proc_type;
 	} else {
-		proc_type = make_type_proc(c->allocator, e->scope, nullptr, 0, nullptr, 0, false, ProcCC_Odin);
+		proc_type = alloc_type_proc(e->scope, nullptr, 0, nullptr, 0, false, ProcCC_Odin);
 	}
 	e->type = proc_type;
 	ast_node(pl, ProcLit, d->proc_lit);
@@ -484,7 +531,12 @@ void check_proc_decl(Checker *c, Entity *e, DeclInfo *d) {
 		check_decl_attributes(c, d->attributes, proc_decl_attribute, &ac);
 	}
 
+	if (ac.calling_convention != 0) {
+		pt->calling_convention = ac.calling_convention;
+	}
 
+
+	e->deprecated_message = ac.deprecated_message;
 	ac.link_name = handle_link_name(c, e->token, ac.link_name, ac.link_prefix);
 
 	if (d->scope->file != nullptr && e->token.string == "main") {
@@ -553,10 +605,6 @@ void check_proc_decl(Checker *c, Entity *e, DeclInfo *d) {
 
 	if (ac.link_name.len > 0) {
 		e->Procedure.link_name = ac.link_name;
-	}
-
-	if (ac.cc != ProcCC_Invalid) {
-		e->type->Proc.calling_convention = ac.cc;
 	}
 
 	if (is_foreign) {
@@ -719,7 +767,11 @@ void check_proc_group_decl(Checker *c, Entity *pg_entity, DeclInfo *d) {
 
 	ast_node(pg, ProcGroup, d->init_expr);
 
-	array_init(&pge->entities, c->allocator, pg->args.count);
+	pge->entities = array_make<Entity*>(c->allocator, 0, pg->args.count);
+
+	// NOTE(bill): This must be set here to prevent cycles in checking if someone
+	// places the entity within itself
+	pg_entity->type = t_invalid;
 
 	PtrSet<Entity *> entity_map = {};
 	ptr_set_init(&entity_map, heap_allocator());
@@ -818,17 +870,24 @@ void check_proc_group_decl(Checker *c, Entity *pg_entity, DeclInfo *d) {
 		}
 	}
 
-	pg_entity->type = t_invalid;
 }
 
 void check_entity_decl(Checker *c, Entity *e, DeclInfo *d, Type *named_type) {
-	if (e->type != nullptr) {
+	if (e->state == EntityState_Resolved)  {
+		return;
+	}
+	String name = e->token.string;
+
+	if (e->type != nullptr || e->state != EntityState_Unresolved) {
+		error(e->token, "Illegal declaration cycle of `%.*s`", LIT(name));
 		return;
 	}
 
+	GB_ASSERT(e->state == EntityState_Unresolved);
+
 #if 0
 	char buf[256] = {};
-	isize n = gb_snprintf(buf, 256, "%.*s %d", LIT(e->token.string), e->kind);
+	isize n = gb_snprintf(buf, 256, "%.*s %d", LIT(name), e->kind);
 	Timings timings = {};
 	timings_init(&timings, make_string(cast(u8 *)buf, n-1), 16);
 	defer ({
@@ -845,17 +904,21 @@ void check_entity_decl(Checker *c, Entity *e, DeclInfo *d, Type *named_type) {
 		if (d == nullptr) {
 			// TODO(bill): Err here?
 			e->type = t_invalid;
+			e->state = EntityState_Resolved;
 			set_base_type(named_type, t_invalid);
 			return;
-			// GB_PANIC("'%.*s' should been declared!", LIT(e->token.string));
+			// GB_PANIC("'%.*s' should been declared!", LIT(name));
 		}
 	}
 
 	CheckerContext prev = c->context;
 	c->context.scope = d->scope;
 	c->context.decl  = d;
+	c->context.type_level = 0;
 
 	e->parent_proc_decl = c->context.curr_proc_decl;
+	e->state = EntityState_InProgress;
+
 
 	switch (e->kind) {
 	case Entity_Variable:
@@ -865,8 +928,7 @@ void check_entity_decl(Checker *c, Entity *e, DeclInfo *d, Type *named_type) {
 		check_const_decl(c, e, d->type_expr, d->init_expr, named_type);
 		break;
 	case Entity_TypeName: {
-		bool is_alias = unparen_expr(d->type_expr)->kind == AstNode_AliasType;
-		check_type_decl(c, e, d->type_expr, named_type, is_alias);
+		check_type_decl(c, e, d->type_expr, named_type);
 		break;
 	}
 	case Entity_Procedure:
@@ -876,6 +938,8 @@ void check_entity_decl(Checker *c, Entity *e, DeclInfo *d, Type *named_type) {
 		check_proc_group_decl(c, e, d);
 		break;
 	}
+
+	e->state = EntityState_Resolved;
 
 	c->context = prev;
 
@@ -930,7 +994,7 @@ void check_proc_body(Checker *c, Token token, DeclInfo *decl, Type *type, AstNod
 				for_array(i, scope->elements.entries) {
 					Entity *f = scope->elements.entries[i].value;
 					if (f->kind == Entity_Variable) {
-						Entity *uvar = make_entity_using_variable(c->allocator, e, f->token, f->type);
+						Entity *uvar = alloc_entity_using_variable(e, f->token, f->type);
 						uvar->Variable.is_immutable = is_immutable;
 						if (is_value) uvar->flags |= EntityFlag_Value;
 

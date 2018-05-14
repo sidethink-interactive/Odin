@@ -1,10 +1,16 @@
+#define USE_THREADED_PARSER 1
 // #define NO_ARRAY_BOUNDS_CHECK
+// #define NO_POINTER_ARITHMETIC
 
 #include "common.cpp"
 #include "timings.cpp"
 #include "build_settings.cpp"
 #include "tokenizer.cpp"
 #include "exact_value.cpp"
+
+#include "parser.hpp"
+#include "checker.hpp"
+
 #include "parser.cpp"
 #include "docs.cpp"
 #include "checker.cpp"
@@ -12,9 +18,9 @@
 #include "ir_opt.cpp"
 #include "ir_print.cpp"
 
-#if defined(GB_SYSTEM_WINDOWS)
 // NOTE(bill): 'name' is used in debugging and profiling modes
 i32 system_exec_command_line_app(char *name, bool is_silent, char *fmt, ...) {
+#if defined(GB_SYSTEM_WINDOWS)
 	STARTUPINFOW start_info = {gb_size_of(STARTUPINFOW)};
 	PROCESS_INFORMATION pi = {0};
 	char cmd_line[4096] = {0};
@@ -37,9 +43,9 @@ i32 system_exec_command_line_app(char *name, bool is_silent, char *fmt, ...) {
 	// gb_printf_err("%.*s\n", cast(int)cmd_len, cmd_line);
 
 	tmp = gb_temp_arena_memory_begin(&string_buffer_arena);
+	defer (gb_temp_arena_memory_end(tmp));
 
 	cmd = string_to_string16(string_buffer_allocator, make_string(cast(u8 *)cmd_line, cmd_len-1));
-
 	if (CreateProcessW(nullptr, cmd.text,
 	                   nullptr, nullptr, true, 0, nullptr, nullptr,
 	                   &start_info, &pi)) {
@@ -54,11 +60,9 @@ i32 system_exec_command_line_app(char *name, bool is_silent, char *fmt, ...) {
 		exit_code = -1;
 	}
 
-	gb_temp_arena_memory_end(tmp);
 	return exit_code;
-}
+
 #elif defined(GB_SYSTEM_OSX) || defined(GB_SYSTEM_UNIX)
-i32 system_exec_command_line_app(char *name, bool is_silent, char *fmt, ...) {
 
 	char cmd_line[4096] = {0};
 	isize cmd_len;
@@ -102,21 +106,19 @@ i32 system_exec_command_line_app(char *name, bool is_silent, char *fmt, ...) {
 	// exit_code = status;
 
 	return exit_code;
-}
 #endif
+}
 
 
 
 Array<String> setup_args(int argc, char **argv) {
-	Array<String> args = {};
 	gbAllocator a = heap_allocator();
-	int i;
 
 #if defined(GB_SYSTEM_WINDOWS)
 	int wargc = 0;
 	wchar_t **wargv = command_line_to_wargv(GetCommandLineW(), &wargc);
-	array_init(&args, a, wargc);
-	for (i = 0; i < wargc; i++) {
+	auto args = array_make<String>(a, 0, wargc);
+	for (isize i = 0; i < wargc; i++) {
 		wchar_t *warg = wargv[i];
 		isize wlen = string16_len(warg);
 		String16 wstr = make_string16(warg, wlen);
@@ -125,17 +127,17 @@ Array<String> setup_args(int argc, char **argv) {
 			array_add(&args, arg);
 		}
 	}
-
+	return args;
 #else
-	array_init(&args, a, argc);
-	for (i = 0; i < argc; i++) {
+	auto args = array_make<String>(a, 0, argc);
+	for (isize i = 0; i < argc; i++) {
 		String arg = make_string_c(argv[i]);
 		if (arg.len > 0) {
 			array_add(&args, arg);
 		}
 	}
-#endif
 	return args;
+#endif
 }
 
 
@@ -198,6 +200,8 @@ bool string_is_valid_identifier(String str) {
 enum BuildFlagKind {
 	BuildFlag_Invalid,
 
+	BuildFlag_OutFile,
+	BuildFlag_ResourceFile,
 	BuildFlag_OptimizationLevel,
 	BuildFlag_ShowTimings,
 	BuildFlag_ThreadCount,
@@ -207,6 +211,7 @@ enum BuildFlagKind {
 	BuildFlag_Debug,
 	BuildFlag_CrossCompile,
 	BuildFlag_CrossLibDir,
+	BuildFlag_NoBoundsCheck,
 
 	BuildFlag_COUNT,
 };
@@ -234,8 +239,9 @@ void add_flag(Array<BuildFlag> *build_flags, BuildFlagKind kind, String name, Bu
 }
 
 bool parse_build_flags(Array<String> args) {
-	Array<BuildFlag> build_flags = {};
-	array_init(&build_flags, heap_allocator(), BuildFlag_COUNT);
+	auto build_flags = array_make<BuildFlag>(heap_allocator(), 0, BuildFlag_COUNT);
+	add_flag(&build_flags, BuildFlag_OutFile,           str_lit("out"),             BuildFlagParam_String);
+	add_flag(&build_flags, BuildFlag_ResourceFile,      str_lit("resource"),        BuildFlagParam_String);
 	add_flag(&build_flags, BuildFlag_OptimizationLevel, str_lit("opt"),             BuildFlagParam_Integer);
 	add_flag(&build_flags, BuildFlag_ShowTimings,       str_lit("show-timings"),    BuildFlagParam_None);
 	add_flag(&build_flags, BuildFlag_ThreadCount,       str_lit("thread-count"),    BuildFlagParam_Integer);
@@ -245,12 +251,11 @@ bool parse_build_flags(Array<String> args) {
 	add_flag(&build_flags, BuildFlag_Debug,             str_lit("debug"),           BuildFlagParam_None);
 	add_flag(&build_flags, BuildFlag_CrossCompile,      str_lit("cross-compile"),   BuildFlagParam_String);
 	add_flag(&build_flags, BuildFlag_CrossLibDir,       str_lit("cross-lib-dir"),   BuildFlagParam_String);
+	add_flag(&build_flags, BuildFlag_NoBoundsCheck,     str_lit("no-bounds-check"), BuildFlagParam_None);
 
 
 	GB_ASSERT(args.count >= 3);
-	Array<String> flag_args = args;
-	flag_args.data  += 3;
-	flag_args.count -= 3;
+	Array<String> flag_args = array_slice(args, 3, args.count);
 
 	bool set_flags[BuildFlag_COUNT] = {};
 
@@ -314,9 +319,16 @@ bool parse_build_flags(Array<String> args) {
 						case BuildFlagParam_Float:
 							value = exact_value_float_from_string(param);
 							break;
-						case BuildFlagParam_String:
+						case BuildFlagParam_String: {
 							value = exact_value_string(param);
+							if (value.kind == ExactValue_String) {
+								String s = value.value_string;
+								if (s.len > 1 && s[0] == '"' && s[s.len-1] == '"') {
+									value.value_string = substring(s, 1, s.len-1);
+								}
+							}
 							break;
+						}
 						}
 					}
 					if (ok) {
@@ -359,9 +371,45 @@ bool parse_build_flags(Array<String> args) {
 						}
 
 						if (ok) switch (bf.kind) {
+						case BuildFlag_OutFile: {
+							GB_ASSERT(value.kind == ExactValue_String);
+							String path = value.value_string;
+							path = string_trim_whitespace(path);
+							if (is_import_path_valid(path)) {
+								#if defined(GB_SYSTEM_WINDOWS)
+									String ext = path_extension(path);
+									if (ext == ".exe") {
+										path = substring(path, 0, string_extension_position(path));
+									}
+								#endif
+								build_context.out_filepath = path;
+							} else {
+								gb_printf_err("Invalid -out path, got %.*s\n", LIT(path));
+								bad_flags = true;
+							}
+							break;
+						}
+						case BuildFlag_ResourceFile: {
+							GB_ASSERT(value.kind == ExactValue_String);
+							String path = value.value_string;
+							path = string_trim_whitespace(path);
+							if (is_import_path_valid(path)) {
+								if(!string_ends_with(path, str_lit(".rc"))) {
+									gb_printf_err("Invalid -resource path %.*s, missing .rc\n", LIT(path));
+									bad_flags = true;
+									break;
+								}
+								build_context.resource_filepath = substring(path, 0, string_extension_position(path));
+								build_context.has_resource = true;
+							} else {
+								gb_printf_err("Invalid -resource path, got %.*s\n", LIT(path));
+								bad_flags = true;
+							}
+							break;
+						}
 						case BuildFlag_OptimizationLevel:
 							GB_ASSERT(value.kind == ExactValue_Integer);
-							build_context.optimization_level = cast(i32)i128_to_i64(value.value_integer);
+							build_context.optimization_level = cast(i32)value.value_integer;
 							break;
 						case BuildFlag_ShowTimings:
 							GB_ASSERT(value.kind == ExactValue_Invalid);
@@ -369,9 +417,9 @@ bool parse_build_flags(Array<String> args) {
 							break;
 						case BuildFlag_ThreadCount: {
 							GB_ASSERT(value.kind == ExactValue_Integer);
-							isize count = cast(isize)i128_to_i64(value.value_integer);
+							isize count = cast(isize)value.value_integer;
 							if (count <= 0) {
-								gb_printf_err("%.*s expected a positive non-zero number, got %.*s", LIT(name), LIT(param));
+								gb_printf_err("%.*s expected a positive non-zero number, got %.*s\n", LIT(name), LIT(param));
 								build_context.thread_count = 0;
 							} else {
 								build_context.thread_count = count;
@@ -386,13 +434,11 @@ bool parse_build_flags(Array<String> args) {
 						case BuildFlag_CrossCompile: {
 							GB_ASSERT(value.kind == ExactValue_String);
 							cross_compile_target = value.value_string;
-#ifdef GB_SYSTEM_UNIX
-#ifdef GB_ARCH_64_BIT
+						#if defined(GB_SYSTEM_UNIX) && defined(GB_ARCH_64_BIT)
 							if (str_eq_ignore_case(cross_compile_target, str_lit("Essence"))) {
 
 							} else
-#endif
-#endif
+						#endif
 							{
 								gb_printf_err("Unsupported cross compilation target '%.*s'\n", LIT(cross_compile_target));
 								gb_printf_err("Currently supported targets: Essence (from 64-bit Unixes only)\n");
@@ -500,7 +546,11 @@ bool parse_build_flags(Array<String> args) {
 						}
 
 						case BuildFlag_Debug:
-							build_context.debug = true;
+							build_context.ODIN_DEBUG = true;
+							break;
+
+						case BuildFlag_NoBoundsCheck:
+							build_context.no_bounds_check = true;
 							break;
 						}
 					}
@@ -519,7 +569,6 @@ bool parse_build_flags(Array<String> args) {
 
 	return !bad_flags;
 }
-
 
 void show_timings(Checker *c, Timings *t) {
 	Parser *p    = c->parser;
@@ -559,8 +608,7 @@ void show_timings(Checker *c, Timings *t) {
 void remove_temp_files(String output_base) {
 	if (build_context.keep_temp_files) return;
 
-	Array<u8> data = {};
-	array_init_count(&data, heap_allocator(), output_base.len + 10);
+	auto data = array_make<u8>(heap_allocator(), output_base.len + 10);
 	defer (array_free(&data));
 
 	isize n = output_base.len;
@@ -573,12 +621,71 @@ void remove_temp_files(String output_base) {
 	EXT_REMOVE(".bc");
 #if defined(GB_SYSTEM_WINDOWS)
 	EXT_REMOVE(".obj");
+	EXT_REMOVE(".res");
 #else
 	EXT_REMOVE(".o");
 #endif
 
 #undef EXT_REMOVE
 }
+
+i32 exec_llvm_opt(String output_base) {
+#if defined(GB_SYSTEM_WINDOWS)
+	// For more passes arguments: http://llvm.org/docs/Passes.html
+	return system_exec_command_line_app("llvm-opt", false,
+		"\"%.*sbin/opt\" \"%.*s.ll\" -o \"%.*s.bc\" %.*s "
+		"-mem2reg "
+		"-memcpyopt "
+		"-die "
+		"",
+		LIT(build_context.ODIN_ROOT),
+		LIT(output_base), LIT(output_base),
+		LIT(build_context.opt_flags));
+#else
+	// NOTE(zangent): This is separate because it seems that LLVM tools are packaged
+	//   with the Windows version, while they will be system-provided on MacOS and GNU/Linux
+	return system_exec_command_line_app("llvm-opt", false,
+		"opt \"%.*s.ll\" -o \"%.*s.bc\" %.*s "
+		"-mem2reg "
+		"-memcpyopt "
+		"-die "
+		"",
+		LIT(output_base), LIT(output_base),
+		LIT(build_context.opt_flags));
+#endif
+}
+
+i32 exec_llvm_llc(String output_base) {
+#if defined(GB_SYSTEM_WINDOWS)
+	// For more arguments: http://llvm.org/docs/CommandGuide/llc.html
+	return system_exec_command_line_app("llvm-llc", false,
+		"\"%.*sbin/llc\" \"%.*s.bc\" -filetype=obj -O%d "
+		"-o \"%.*s.obj\" "
+		"%.*s "
+		// "-debug-pass=Arguments "
+		"",
+		LIT(build_context.ODIN_ROOT),
+		LIT(output_base),
+		build_context.optimization_level,
+		LIT(output_base),
+		LIT(build_context.llc_flags));
+#else
+	// NOTE(zangent): Linux / Unix is unfinished and not tested very well.
+	// For more arguments: http://llvm.org/docs/CommandGuide/llc.html
+	return system_exec_command_line_app("llc", false,
+		"llc \"%.*s.bc\" -filetype=obj -relocation-model=pic -O%d "
+		"%.*s "
+		// "-debug-pass=Arguments "
+		"%s"
+		"",
+		LIT(output_base),
+		build_context.optimization_level,
+		LIT(build_context.llc_flags),
+		str_eq_ignore_case(cross_compile_target, str_lit("Essence")) ? "-mtriple=x86_64-pc-none-elf" : "");
+#endif
+}
+
+
 
 int main(int arg_count, char **arg_ptr) {
 	if (arg_count < 2) {
@@ -678,6 +785,7 @@ int main(int arg_count, char **arg_ptr) {
 		return 0;
 	}
 
+
 	timings_start_section(&timings, str_lit("type check"));
 
 	Checker checker = {0};
@@ -693,6 +801,8 @@ int main(int arg_count, char **arg_ptr) {
 	}
 	// defer (ir_gen_destroy(&ir_gen));
 
+
+
 	timings_start_section(&timings, str_lit("llvm ir gen"));
 	ir_gen_tree(&ir_gen);
 
@@ -702,9 +812,6 @@ int main(int arg_count, char **arg_ptr) {
 	timings_start_section(&timings, str_lit("llvm ir print"));
 	print_llvm_ir(&ir_gen);
 
-	// prof_print_all();
-
-	timings_start_section(&timings, str_lit("llvm-opt"));
 
 	String output_name = ir_gen.output_name;
 	String output_base = ir_gen.output_base;
@@ -713,54 +820,19 @@ int main(int arg_count, char **arg_ptr) {
 
 	i32 exit_code = 0;
 
-	#if defined(GB_SYSTEM_WINDOWS)
-		// For more passes arguments: http://llvm.org/docs/Passes.html
-		exit_code = system_exec_command_line_app("llvm-opt", false,
-			"\"%.*sbin/opt\" \"%.*s\".ll -o \"%.*s\".bc %.*s "
-			"-mem2reg "
-			"-memcpyopt "
-			"-die "
-			"",
-			LIT(build_context.ODIN_ROOT),
-			LIT(output_base), LIT(output_base),
-			LIT(build_context.opt_flags));
-		if (exit_code != 0) {
-			return exit_code;
-		}
-	#else
-		// NOTE(zangent): This is separate because it seems that LLVM tools are packaged
-		//   with the Windows version, while they will be system-provided on MacOS and GNU/Linux
-		exit_code = system_exec_command_line_app("llvm-opt", false,
-			"opt \"%.*s.ll\" -o \"%.*s\".bc %.*s "
-			"-mem2reg "
-			"-memcpyopt "
-			"-die "
-			"",
-			LIT(output_base), LIT(output_base),
-			LIT(build_context.opt_flags));
-		if (exit_code != 0) {
-			return exit_code;
-		}
-	#endif
+	timings_start_section(&timings, str_lit("llvm-opt"));
+	exit_code = exec_llvm_opt(output_base);
+	if (exit_code != 0) {
+		return exit_code;
+	}
+
+	timings_start_section(&timings, str_lit("llvm-llc"));
+	exit_code = exec_llvm_llc(output_base);
+	if (exit_code != 0) {
+		return exit_code;
+	}
 
 	#if defined(GB_SYSTEM_WINDOWS)
-		timings_start_section(&timings, str_lit("llvm-llc"));
-		// For more arguments: http://llvm.org/docs/CommandGuide/llc.html
-		exit_code = system_exec_command_line_app("llvm-llc", false,
-			"\"%.*sbin/llc\" \"%.*s.bc\" -filetype=obj -O%d "
-			"-o \"%.*s.obj\" "
-			"%.*s "
-			// "-debug-pass=Arguments "
-			"",
-			LIT(build_context.ODIN_ROOT),
-			LIT(output_base),
-			build_context.optimization_level,
-			LIT(output_base),
-			LIT(build_context.llc_flags));
-		if (exit_code != 0) {
-			return exit_code;
-		}
-
 		timings_start_section(&timings, str_lit("msvc-link"));
 
 		gbString lib_str = gb_string_make(heap_allocator(), "");
@@ -789,18 +861,44 @@ int main(int arg_count, char **arg_ptr) {
 			link_settings = gb_string_append_fmt(link_settings, " /DEBUG");
 		}
 
-		exit_code = system_exec_command_line_app("msvc-link", true,
-			"link \"%.*s.obj\" -OUT:\"%.*s.%s\" %s "
-			"/defaultlib:libcmt "
-			// "/nodefaultlib "
-			"/nologo /incremental:no /opt:ref /subsystem:CONSOLE "
-			" %.*s "
-			" %s "
-			"",
-			LIT(output_base), LIT(output_base), output_ext,
-			lib_str, LIT(build_context.link_flags),
-			link_settings
-		);
+		if(build_context.has_resource) {
+			exit_code = system_exec_command_line_app("msvc-link", true,
+                "rc /nologo /fo \"%.*s.res\" \"%.*s.rc\"",
+                LIT(output_base),
+                LIT(build_context.resource_filepath)
+            );
+
+            if (exit_code != 0) {
+				return exit_code;
+			}
+
+			exit_code = system_exec_command_line_app("msvc-link", true,
+				"link \"%.*s.obj\" \"%.*s.res\" -OUT:\"%.*s.%s\" %s "
+				"/defaultlib:libcmt "
+				// "/nodefaultlib "
+				"/nologo /incremental:no /opt:ref /subsystem:CONSOLE "
+				" %.*s "
+				" %s "
+				"",
+				LIT(output_base), LIT(output_base), LIT(output_base), output_ext,
+				lib_str, LIT(build_context.link_flags),
+				link_settings
+			);
+		} else {
+			exit_code = system_exec_command_line_app("msvc-link", true,
+				"link \"%.*s.obj\" -OUT:\"%.*s.%s\" %s "
+				"/defaultlib:libcmt "
+				// "/nodefaultlib "
+				"/nologo /incremental:no /opt:ref /subsystem:CONSOLE "
+				" %.*s "
+				" %s "
+				"",
+				LIT(output_base), LIT(output_base), output_ext,
+				lib_str, LIT(build_context.link_flags),
+				link_settings
+			);
+		}
+
 		if (exit_code != 0) {
 			return exit_code;
 		}
@@ -815,25 +913,7 @@ int main(int arg_count, char **arg_ptr) {
 			system_exec_command_line_app("odin run", false, "%.*s.exe", LIT(output_base));
 		}
 	#else
-
-		// NOTE(zangent): Linux / Unix is unfinished and not tested very well.
-
-
-		timings_start_section(&timings, str_lit("llvm-llc"));
-		// For more arguments: http://llvm.org/docs/CommandGuide/llc.html
-		exit_code = system_exec_command_line_app("llc", false,
-			"llc \"%.*s.bc\" -filetype=obj -relocation-model=pic -O%d "
-			"%.*s "
-			// "-debug-pass=Arguments "
-			"%s"
-			"",
-			LIT(output_base),
-			build_context.optimization_level,
-			LIT(build_context.llc_flags),
-			str_eq_ignore_case(cross_compile_target, str_lit("Essence")) ? "-mtriple=x86_64-pc-none-elf" : "");
-		if (exit_code != 0) {
-			return exit_code;
-		}
+		timings_start_section(&timings, str_lit("ld-link"));
 
 		// NOTE(vassvik): get cwd, for used for local shared libs linking, since those have to be relative to the exe
 		char cwd[256];
@@ -935,7 +1015,7 @@ int main(int arg_count, char **arg_ptr) {
 			#endif
 			, linker, LIT(output_base), LIT(output_base), output_ext,
 			lib_str,
-			str_eq_ignore_case(cross_compile_target, str_lit("Essence")) ? "" : "-lc -lm",
+			str_eq_ignore_case(cross_compile_target, str_lit("Essence")) ? "-lfreetype -lglue" : "-lc -lm",
 			LIT(build_context.link_flags),
 			link_settings,
 			LIT(cross_compile_lib_dir)

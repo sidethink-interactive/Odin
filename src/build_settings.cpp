@@ -7,6 +7,7 @@ struct BuildContext {
 	String ODIN_VENDOR;  // compiler vendor
 	String ODIN_VERSION; // compiler version
 	String ODIN_ROOT;    // Odin ROOT
+	bool   ODIN_DEBUG;   // Odin in debug mode
 
 	// In bytes
 	i64    word_size; // Size of a pointer, must be >= 4
@@ -14,6 +15,9 @@ struct BuildContext {
 
 	String command;
 
+	String out_filepath;
+	String resource_filepath;
+	bool   has_resource;
 	String opt_flags;
 	String llc_flags;
 	String link_flags;
@@ -22,7 +26,7 @@ struct BuildContext {
 	i32    optimization_level;
 	bool   show_timings;
 	bool   keep_temp_files;
-	bool   debug;
+	bool   no_bounds_check;
 
 	gbAffinity affinity;
 	isize      thread_count;
@@ -69,7 +73,6 @@ String const NIX_SEPARATOR_STRING   = {cast(u8 *)"/",  1};
 #if defined(GB_SYSTEM_WINDOWS)
 String odin_root_dir(void) {
 	String path = global_module_path;
-	Array<wchar_t> path_buf;
 	isize len, i;
 	gbTempArenaMemory tmp;
 	wchar_t *text;
@@ -78,7 +81,7 @@ String odin_root_dir(void) {
 		return global_module_path;
 	}
 
-	array_init_count(&path_buf, heap_allocator(), 300);
+	auto path_buf = array_make<wchar_t>(heap_allocator(), 300);
 
 	len = 0;
 	for (;;) {
@@ -127,7 +130,6 @@ String odin_root_dir(void) {
 
 String odin_root_dir(void) {
 	String path = global_module_path;
-	Array<char> path_buf;
 	isize len, i;
 	gbTempArenaMemory tmp;
 	u8 *text;
@@ -136,7 +138,7 @@ String odin_root_dir(void) {
 		return global_module_path;
 	}
 
-	array_init_count(&path_buf, heap_allocator(), 300);
+	auto path_buf = array_make<char>(heap_allocator(), 300);
 
 	len = 0;
 	for (;;) {
@@ -183,7 +185,6 @@ String odin_root_dir(void) {
 
 String odin_root_dir(void) {
 	String path = global_module_path;
-	Array<char> path_buf;
 	isize len, i;
 	gbTempArenaMemory tmp;
 	u8 *text;
@@ -192,7 +193,7 @@ String odin_root_dir(void) {
 		return global_module_path;
 	}
 
-	array_init_count(&path_buf, heap_allocator(), 300);
+	auto path_buf = array_make<char>(heap_allocator(), 300);
 	defer (array_free(&path_buf));
 
 	len = 0;
@@ -308,7 +309,7 @@ String get_fullpath_core(gbAllocator a, String path) {
 }
 
 
-String const ODIN_VERSION = str_lit("0.8.0-dev");
+String const ODIN_VERSION = str_lit("0.8.2");
 String cross_compile_target = str_lit("");
 String cross_compile_lib_dir = str_lit("");
 
@@ -344,7 +345,7 @@ void init_build_context(void) {
 
 	{
 		u16 x = 1;
-		bool big = !(*cast(u8 *)&x);
+		bool big = !*cast(u8 *)&x;
 		bc->ODIN_ENDIAN = big ? str_lit("big") : str_lit("little");
 	}
 

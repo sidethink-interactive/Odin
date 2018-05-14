@@ -1,4 +1,4 @@
-/* gb.h - v0.31  - Ginger Bill's C Helper Library - public domain
+/* gb.h - v0.32  - Ginger Bill's C Helper Library - public domain
                  - no warranty implied; use at your own risk
 
 	This is a single header file with a bunch of useful stuff
@@ -58,6 +58,7 @@ TODOS
 	- More date & time functions
 
 VERSION HISTORY
+	0.32  - Minor fixes
 	0.31  - Add gb_file_remove
 	0.30  - Changes to gbThread (and gbMutex on Windows)
 	0.29  - Add extras for gbString
@@ -1875,7 +1876,7 @@ void GB_JOIN2(FUNC,rehash)(NAME *h, isize new_count) { \
 		gbHashTableFindResult fr; \
 		if (gb_array_count(nh.hashes) == 0) \
 			GB_JOIN2(FUNC,grow)(&nh); \
-		e = &nh.entries[i]; \
+		e = &h->entries[i]; \
 		fr = GB_JOIN2(FUNC,_find)(&nh, e->key); \
 		j = GB_JOIN2(FUNC,_add_entry)(&nh, e->key); \
 		if (fr.entry_prev < 0) \
@@ -4026,10 +4027,10 @@ gb_inline void *gb_resize      (gbAllocator a, void *ptr, isize old_size, isize 
 gb_inline void *gb_resize_align(gbAllocator a, void *ptr, isize old_size, isize new_size, isize alignment) { return a.proc(a.data, gbAllocation_Resize, new_size, alignment, ptr, old_size, GB_DEFAULT_ALLOCATOR_FLAGS); }
 
 gb_inline void *gb_alloc_copy      (gbAllocator a, void const *src, isize size) {
-	return gb_memcopy(gb_alloc(a, size), src, size);
+	return gb_memmove(gb_alloc(a, size), src, size);
 }
 gb_inline void *gb_alloc_copy_align(gbAllocator a, void const *src, isize size, isize alignment) {
-	return gb_memcopy(gb_alloc_align(a, size, alignment), src, size);
+	return gb_memmove(gb_alloc_align(a, size, alignment), src, size);
 }
 
 gb_inline char *gb_alloc_str(gbAllocator a, char const *str) {
@@ -4038,7 +4039,8 @@ gb_inline char *gb_alloc_str(gbAllocator a, char const *str) {
 
 gb_inline char *gb_alloc_str_len(gbAllocator a, char const *str, isize len) {
 	char *result;
-	result = cast(char *)gb_alloc_copy(a, str, len+1);
+	result = cast(char *)gb_alloc(a, len+1);
+	gb_memmove(result, str, len);
 	result[len] = '\0';
 	return result;
 }
@@ -6546,7 +6548,7 @@ gbString gb_string_make_length(gbAllocator a, void const *init_str, isize num_by
 	header->allocator = a;
 	header->length    = num_bytes;
 	header->capacity  = num_bytes;
-	if (num_bytes && init_str) {
+	if (num_bytes > 0 && init_str) {
 		gb_memcopy(str, init_str, num_bytes);
 	}
 	str[num_bytes] = '\0';

@@ -62,7 +62,7 @@ void ir_opt_add_operands(Array<irValue *> *ops, irInstr *i) {
 		break;
 	case irInstr_Call:
 		array_add(ops, i->Call.value);
-		for (isize j = 0; j < i->Call.arg_count; j++) {
+		for_array(j, i->Call.args) {
 			array_add(ops, i->Call.args[j]);
 		}
 		break;
@@ -232,7 +232,7 @@ bool ir_opt_block_fusion(irProcedure *proc, irBlock *a) {
 	array_pop(&a->instrs); // Remove branch at end
 	for_array(i, b->instrs) {
 		array_add(&a->instrs, b->instrs[i]);
-		ir_set_instr_parent(b->instrs[i], a);
+		ir_set_instr_block(b->instrs[i], a);
 	}
 
 	array_clear(&a->succs);
@@ -276,8 +276,8 @@ void ir_opt_blocks(irProcedure *proc) {
 void ir_opt_build_referrers(irProcedure *proc) {
 	gbTempArenaMemory tmp = gb_temp_arena_memory_begin(&proc->module->tmp_arena);
 
-	Array<irValue *> ops = {0}; // NOTE(bill): Act as a buffer
-	array_init(&ops, proc->module->tmp_allocator, 64); // HACK(bill): This _could_ overflow the temp arena
+	// NOTE(bill): Acta as a buffer
+	auto ops = array_make<irValue *>(proc->module->tmp_allocator, 0, 64); // TODO HACK(bill): This _could_ overflow the temp arena
 	for_array(i, proc->blocks) {
 		irBlock *b = proc->blocks[i];
 		for_array(j, b->instrs) {

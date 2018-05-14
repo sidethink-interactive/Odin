@@ -22,7 +22,7 @@ enum HashKeyKind {
 
 struct PtrAndId {
 	void *ptr;
-	u32   id;
+	u64   id;
 };
 
 struct HashKey {
@@ -30,8 +30,8 @@ struct HashKey {
 	// u128        key;
 	u64         key;
 	union {
-		String       string; // if String, s.len > 0
-		void *       ptr;
+		String   string; // if String, s.len > 0
+		void *   ptr;
 		PtrAndId ptr_and_id;
 	};
 };
@@ -58,11 +58,21 @@ gb_inline HashKey hash_pointer(void *ptr) {
 	h.ptr = ptr;
 	return h;
 }
-gb_inline HashKey hash_ptr_and_id(void *ptr, u32 id) {
+gb_inline HashKey hash_ptr_and_id(void *ptr, u64 id) {
 	HashKey h = {HashKey_PtrAndId};
 	h.key = cast(u64)cast(uintptr)ptr;
 	h.ptr_and_id.ptr = ptr;
 	h.ptr_and_id.id  = id;
+	return h;
+}
+gb_inline HashKey hash_integer(u64 u) {
+	HashKey h = {HashKey_Default};
+	h.key = u;
+	return h;
+}
+gb_inline HashKey hash_f64(f64 f) {
+	HashKey h = {HashKey_Default};
+	h.key = bit_cast<u64>(f);
 	return h;
 }
 
@@ -126,13 +136,15 @@ template <typename T> void  multi_map_remove_all(Map<T> *h, HashKey key);
 
 template <typename T>
 gb_inline void map_init(Map<T> *h, gbAllocator a, isize capacity) {
-	array_init(&h->hashes,  a, capacity);
-	array_init(&h->entries, a, capacity);}
+	array_init(&h->hashes,  a, 0, capacity);
+	array_init(&h->entries, a, 0, capacity);
+}
 
 template <typename T>
 gb_inline void map_destroy(Map<T> *h) {
 	array_free(&h->entries);
-	array_free(&h->hashes);}
+	array_free(&h->hashes);
+}
 
 template <typename T>
 gb_internal isize map__add_entry(Map<T> *h, HashKey key) {

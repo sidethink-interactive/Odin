@@ -82,9 +82,9 @@ gb_inline String make_string_c(char *text) {
 	return make_string(cast(u8 *)cast(void *)text, gb_strlen(text));
 }
 
-String substring(String s, isize lo, isize hi) {
+String substring(String const &s, isize lo, isize hi) {
 	isize max = s.len;
-	GB_ASSERT(lo <= hi && hi <= max);
+	GB_ASSERT_MSG(lo <= hi && hi <= max, "%td..%td..%td", lo, hi, max);
 
 	return make_string(s.text+lo, hi-lo);
 }
@@ -92,14 +92,14 @@ String substring(String s, isize lo, isize hi) {
 
 
 
-gb_inline bool str_eq_ignore_case(String a, String b) {
+gb_inline bool str_eq_ignore_case(String const &a, String const &b) {
 	if (a.len == b.len) {
-		isize i;
-		for (i = 0; i < a.len; i++) {
+		for (isize i = 0; i < a.len; i++) {
 			char x = cast(char)a[i];
 			char y = cast(char)b[i];
-			if (gb_char_to_lower(x) != gb_char_to_lower(y))
+			if (gb_char_to_lower(x) != gb_char_to_lower(y)) {
 				return false;
+			}
 		}
 		return true;
 	}
@@ -180,7 +180,7 @@ template <isize N> bool operator >= (String const &a, char const (&b)[N]) { retu
 
 
 
-gb_inline bool string_starts_with(String s, String prefix) {
+gb_inline bool string_starts_with(String const &s, String const &prefix) {
 	if (prefix.len > s.len) {
 		return false;
 	}
@@ -188,7 +188,7 @@ gb_inline bool string_starts_with(String s, String prefix) {
 	return substring(s, 0, prefix.len) == prefix;
 }
 
-gb_inline bool string_ends_with(String s, String suffix) {
+gb_inline bool string_ends_with(String const &s, String const &suffix) {
 	if (suffix.len > s.len) {
 		return false;
 	}
@@ -196,7 +196,7 @@ gb_inline bool string_ends_with(String s, String suffix) {
 	return substring(s, s.len-suffix.len, s.len) == suffix;
 }
 
-gb_inline isize string_extension_position(String str) {
+gb_inline isize string_extension_position(String const &str) {
 	isize dot_pos = -1;
 	isize i = str.len;
 	while (i --> 0) {
@@ -210,6 +210,15 @@ gb_inline isize string_extension_position(String str) {
 
 	return dot_pos;
 }
+
+String path_extension(String const &str) {
+	isize pos = string_extension_position(str);
+	if (pos < 0) {
+		return make_string(nullptr, 0);
+	}
+	return substring(str, pos, str.len);
+}
+
 
 String string_trim_whitespace(String str) {
 	while (str.len > 0 && rune_is_whitespace(str[str.len-1])) {
@@ -228,7 +237,7 @@ String string_trim_whitespace(String str) {
 	return str;
 }
 
-bool string_contains_char(String s, u8 c) {
+bool string_contains_char(String const &s, u8 c) {
 	isize i;
 	for (i = 0; i < s.len; i++) {
 		if (s[i] == c)
@@ -239,22 +248,21 @@ bool string_contains_char(String s, u8 c) {
 
 String filename_from_path(String s) {
 	isize i = string_extension_position(s);
+	s = substring(s, 0, i);
 	if (i > 0) {
 		isize j = 0;
-		s.len = i;
-		for (j = i-1; j >= 0; j--) {
+		for (j = s.len-1; j >= 0; j--) {
 			if (s[j] == '/' ||
 				s[j] == '\\') {
 				break;
 			}
 		}
-		s.text += j+1;
-		s.len = i-j-1;
+		return substring(s, j+1, s.len);
 	}
 	return make_string(nullptr, 0);
 }
 
-String remove_directory_from_path(String s) {
+String remove_directory_from_path(String const &s) {
 	isize len = 0;
 	for (isize i = s.len-1; i >= 0; i--) {
 		if (s[i] == '/' ||
@@ -267,7 +275,7 @@ String remove_directory_from_path(String s) {
 }
 
 
-String concatenate_strings(gbAllocator a, String x, String y) {
+String concatenate_strings(gbAllocator a, String const &x, String const &y) {
 	isize len = x.len+y.len;
 	u8 *data = gb_alloc_array(a, u8, len+1);
 	gb_memmove(data,       x.text, x.len);
@@ -276,7 +284,7 @@ String concatenate_strings(gbAllocator a, String x, String y) {
 	return make_string(data, len);
 }
 
-String copy_string(gbAllocator a, String s) {
+String copy_string(gbAllocator a, String const &s) {
 	u8 *data = gb_alloc_array(a, u8, s.len+1);
 	gb_memmove(data, s.text, s.len);
 	data[s.len] = 0;

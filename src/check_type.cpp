@@ -34,14 +34,12 @@ void populate_using_entity_map(Checker *c, AstNode *node, Type *t, Map<Entity *>
 
 }
 
-// Returns filled field_count
-Array<Entity *> check_struct_fields(Checker *c, AstNode *node, Array<AstNode *> params,
-                                    isize init_field_capacity, Type *named_type, String context) {
+void check_struct_fields(Checker *c, AstNode *node, Array<Entity *> *fields, Array<AstNode *> params,
+                         isize init_field_capacity, Type *named_type, String context) {
 	gbTempArenaMemory tmp = gb_temp_arena_memory_begin(&c->tmp_arena);
 	defer (gb_temp_arena_memory_end(tmp));
 
-	Array<Entity *> fields = {};
-	array_init(&fields, heap_allocator(), init_field_capacity);
+	*fields = array_make<Entity *>(heap_allocator(), 0, init_field_capacity);
 
 	Map<Entity *> entity_map = {};
 	map_init(&entity_map, c->tmp_allocator, 2*init_field_capacity);
@@ -113,7 +111,7 @@ Array<Entity *> check_struct_fields(Checker *c, AstNode *node, Array<AstNode *> 
 				gb_printf_err("Element\n");
 			}
 
-			type = check_type(c, type_expr);
+			type = check_type_expr(c, type_expr, nullptr);
 
 			if (default_value != nullptr) {
 				Operand o = {};
@@ -181,19 +179,19 @@ Array<Entity *> check_struct_fields(Checker *c, AstNode *node, Array<AstNode *> 
 			Token name_token = name->Ident.token;
 
 			Entity *field = nullptr;
-			field = make_entity_field(c->allocator, c->context.scope, name_token, type, is_using, field_src_index);
+			field = alloc_entity_field(c->context.scope, name_token, type, is_using, field_src_index);
 			field->Variable.default_value = value;
 			field->Variable.default_is_nil = default_is_nil;
 
 			add_entity(c, c->context.scope, name, field);
-			array_add(&fields, field);
+			array_add(fields, field);
 
 			field_src_index += 1;
 		}
 
 
 		if (is_using && p->names.count > 0) {
-			Type *first_type = fields[fields.count-1]->type;
+			Type *first_type = (*fields)[fields->count-1]->type;
 			Type *t = base_type(type_deref(first_type));
 
 			if (!is_type_struct(t) && !is_type_raw_union(t) && !is_type_bit_field(t) &&
@@ -209,49 +207,11 @@ Array<Entity *> check_struct_fields(Checker *c, AstNode *node, Array<AstNode *> 
 			populate_using_entity_map(c, node, type, &entity_map);
 		}
 	}
-
-	return fields;
 }
 
-
-// TODO(bill): Cleanup struct field reordering
-// TODO(bill): Inline sorting procedure?
-GB_COMPARE_PROC(cmp_reorder_struct_fields) {
-	// Rule:
-	// 'using' over non-'using'
-	// Biggest to smallest alignment
-	// if same alignment: biggest to smallest size
-	// if same size: order by source order
-	Entity *x = *(Entity **)a;
-	Entity *y = *(Entity **)b;
-	GB_ASSERT(x != nullptr);
-	GB_ASSERT(y != nullptr);
-	GB_ASSERT(x->kind == Entity_Variable);
-	GB_ASSERT(y->kind == Entity_Variable);
-	bool xu = (x->flags & EntityFlag_Using) != 0;
-	bool yu = (y->flags & EntityFlag_Using) != 0;
-	i64 xa = type_align_of(heap_allocator(), x->type);
-	i64 ya = type_align_of(heap_allocator(), y->type);
-	i64 xs = type_size_of(heap_allocator(), x->type);
-	i64 ys = type_size_of(heap_allocator(), y->type);
-
-	if (xu != yu) {
-		return xu ? -1 : +1;
-	}
-
-	if (xa != ya) {
-		return xa > ya ? -1 : xa < ya;
-	}
-	if (xs != ys) {
-		return xs > ys ? -1 : xs < ys;
-	}
-	i32 diff = x->Variable.field_index - y->Variable.field_index;
-	return diff < 0 ? -1 : diff > 0;
-}
 
 Entity *make_names_field_for_struct(Checker *c, Scope *scope) {
-	Entity *e = make_entity_field(c->allocator, scope,
-		make_token_ident(str_lit("names")), t_string_slice, false, 0);
+	Entity *e = alloc_entity_field(scope, make_token_ident(str_lit("names")), t_string_slice, false, 0);
 	e->Variable.is_immutable = true;
 	e->flags |= EntityFlag_TypeField;
 	return e;
@@ -271,7 +231,7 @@ bool check_custom_align(Checker *c, AstNode *node, i64 *align_) {
 	Type *type = base_type(o.type);
 	if (is_type_untyped(type) || is_type_integer(type)) {
 		if (o.value.kind == ExactValue_Integer) {
-			i64 align = i128_to_i64(o.value.value_integer);
+			i64 align = o.value.value_integer;
 			if (align < 1 || !gb_is_power_of_two(align)) {
 				error(node, "#align must be a power of 2, got %lld", align);
 				return false;
@@ -350,7 +310,8 @@ void add_polymorphic_struct_entity(Checker *c, AstNode *node, Type *named_type, 
 		node->kind = AstNode_Ident;
 		node->Ident.token = token;
 
-		e = make_entity_type_name(a, s, token, named_type);
+		e = alloc_entity_type_name(s, token, named_type);
+		e->state = EntityState_Resolved;
 		add_entity_use(c, node, e);
 	}
 
@@ -360,8 +321,7 @@ void add_polymorphic_struct_entity(Checker *c, AstNode *node, Type *named_type, 
 	if (found_gen_types) {
 		array_add(found_gen_types, e);
 	} else {
-		Array<Entity *> array = {};
-		array_init(&array, heap_allocator());
+		auto array = array_make<Entity *>(heap_allocator());
 		array_add(&array, e);
 		map_set(&c->info.gen_types, hash_pointer(original_type), array);
 	}
@@ -407,8 +367,7 @@ void check_struct_type(Checker *c, Type *struct_type, AstNode *node, Array<Opera
 				}
 			}
 
-			Array<Entity *> entities = {};
-			array_init(&entities, c->allocator, variable_count);
+			auto entities = array_make<Entity *>(c->allocator, 0, variable_count);
 
 			for_array(i, params) {
 				AstNode *param = params[i];
@@ -434,14 +393,14 @@ void check_struct_type(Checker *c, Type *struct_type, AstNode *node, Array<Opera
 					if (type_expr->TypeType.specialization != nullptr) {
 						AstNode *s = type_expr->TypeType.specialization;
 						specialization = check_type(c, s);
-						if (false && !is_type_polymorphic_struct(specialization)) {
-							gbString str = type_to_string(specialization);
-							defer (gb_string_free(str));
-							error(s, "Expected a polymorphic struct, got %s", str);
-							specialization = nullptr;
-						}
+						// if (!is_type_polymorphic_struct(specialization)) {
+						// 	gbString str = type_to_string(specialization);
+						// 	defer (gb_string_free(str));
+						// 	error(s, "Expected a polymorphic struct, got %s", str);
+						// 	specialization = nullptr;
+						// }
 					}
-					type = make_type_generic(c->allocator, c->context.scope, 0, str_lit(""), specialization);
+					type = alloc_type_generic(c->context.scope, 0, str_lit(""), specialization);
 				} else {
 					type = check_type(c, type_expr);
 					if (is_type_polymorphic(type)) {
@@ -494,28 +453,29 @@ void check_struct_type(Checker *c, Type *struct_type, AstNode *node, Array<Opera
 								is_polymorphic = true;
 								can_check_fields = false;
 							}
-							e = make_entity_type_name(c->allocator, scope, token, operand.type);
+							e = alloc_entity_type_name(scope, token, operand.type);
 							e->TypeName.is_type_alias = true;
 						} else {
 							GB_ASSERT(operand.mode == Addressing_Constant);
-							e = make_entity_constant(c->allocator, scope, token, operand.type, operand.value);
+							e = alloc_entity_constant(scope, token, operand.type, operand.value);
 						}
 					} else {
 						if (is_type_param) {
-							e = make_entity_type_name(c->allocator, scope, token, type);
+							e = alloc_entity_type_name(scope, token, type);
 							e->TypeName.is_type_alias = true;
 						} else {
-							e = make_entity_constant(c->allocator, scope, token, type, empty_exact_value);
+							e = alloc_entity_constant(scope, token, type, empty_exact_value);
 						}
 					}
 
+					e->state = EntityState_Resolved;
 					add_entity(c, scope, name, e);
 					array_add(&entities, e);
 				}
 			}
 
 			if (entities.count > 0) {
-				Type *tuple = make_type_tuple(c->allocator);
+				Type *tuple = alloc_type_tuple();
 				tuple->Tuple.variables = entities;
 				polymorphic_params = tuple;
 			}
@@ -547,17 +507,13 @@ void check_struct_type(Checker *c, Type *struct_type, AstNode *node, Array<Opera
 	struct_type->Struct.is_polymorphic          = is_polymorphic;
 	struct_type->Struct.is_poly_specialized     = is_poly_specialized;
 
-	Array<Entity *> fields = {};
 
 	if (!is_polymorphic) {
-		fields = check_struct_fields(c, node, st->fields, min_field_count, named_type, context);
+		check_struct_fields(c, node, &struct_type->Struct.fields, st->fields, min_field_count, named_type, context);
 	}
 
-	struct_type->Struct.fields              = fields;
-	struct_type->Struct.fields_in_src_order = fields;
-
-	for_array(i, fields) {
-		Entity *f = fields[i];
+	for_array(i, struct_type->Struct.fields) {
+		Entity *f = struct_type->Struct.fields[i];
 		if (f->kind == Entity_Variable) {
 			if (f->Variable.default_value.kind == ExactValue_Procedure) {
 				struct_type->Struct.has_proc_default_values = true;
@@ -565,41 +521,6 @@ void check_struct_type(Checker *c, Type *struct_type, AstNode *node, Array<Opera
 			}
 		}
 	}
-
-
-#if 0
-	// TODO(bill): Move this to the appropriate place
-	if (!struct_type->Struct.is_raw_union) {
-		type_set_offsets(c->allocator, struct_type);
-
-		if (!struct_type->failure && !st->is_packed && !st->is_ordered) {
-			struct_type->failure = false;
-			struct_type->Struct.are_offsets_set = false;
-			struct_type->Struct.are_offsets_being_processed = false;
-			gb_zero_item(&struct_type->Struct.offsets);
-			// NOTE(bill): Reorder fields for reduced size/performance
-
-			Array<Entity *> reordered_fields = {};
-			array_init_count(&reordered_fields, c->allocator, fields.count);
-			for_array(i, reordered_fields) {
-				reordered_fields[i] = struct_type->Struct.fields_in_src_order[i];
-			}
-
-			// NOTE(bill): Hacky thing
-			// TODO(bill): Probably make an inline sorting procedure rather than use global variables
-			// NOTE(bill): compound literal order must match source not layout
-			gb_sort_array(reordered_fields.data, fields.count, cmp_reorder_struct_fields);
-
-			for_array(i, fields) {
-				reordered_fields[i]->Variable.field_index = cast(i32)i;
-			}
-
-			struct_type->Struct.fields = reordered_fields;
-		}
-
-		type_set_offsets(c->allocator, struct_type);
-	}
-#endif
 
 	if (st->align != nullptr) {
 		if (st->is_packed) {
@@ -623,14 +544,13 @@ void check_union_type(Checker *c, Type *union_type, AstNode *node) {
 
 	Entity *using_index_expr = nullptr;
 
-	Array<Type *> variants = {};
-	array_init(&variants, c->allocator, variant_count);
+	auto variants = array_make<Type *>(c->allocator, 0, variant_count);
 
 	union_type->Union.scope = c->context.scope;
 
 	for_array(i, ut->variants) {
 		AstNode *node = ut->variants[i];
-		Type *t = check_type(c, node);
+		Type *t = check_type_expr(c, node, nullptr);
 		if (t != nullptr && t != t_invalid) {
 			bool ok = true;
 			t = default_type(t);
@@ -698,8 +618,7 @@ void check_enum_type(Checker *c, Type *enum_type, Type *named_type, AstNode *nod
 	Map<Entity *> entity_map = {}; // Key: String
 	map_init(&entity_map, c->tmp_allocator, 2*(et->fields.count));
 
-	Array<Entity *> fields = {};
-	array_init(&fields, c->allocator, et->fields.count);
+	auto fields = array_make<Entity *>(c->allocator, 0, et->fields.count);
 
 	Type *constant_type = enum_type;
 	if (named_type != nullptr) {
@@ -777,9 +696,10 @@ void check_enum_type(Checker *c, Type *enum_type, Type *named_type, AstNode *nod
 			max_value = iota;
 		}
 
-		Entity *e = make_entity_constant(c->allocator, c->context.scope, ident->Ident.token, constant_type, iota);
+		Entity *e = alloc_entity_constant(c->context.scope, ident->Ident.token, constant_type, iota);
 		e->identifier = ident;
 		e->flags |= EntityFlag_Visited;
+		e->state = EntityState_Resolved;
 
 		HashKey key = hash_string(name);
 		if (map_get(&entity_map, key) != nullptr) {
@@ -794,15 +714,27 @@ void check_enum_type(Checker *c, Type *enum_type, Type *named_type, AstNode *nod
 	GB_ASSERT(fields.count <= et->fields.count);
 
 
-	enum_type->Enum.fields      = fields.data;
-	enum_type->Enum.field_count = cast(i32)fields.count;
+	enum_type->Enum.fields    = fields;
+	enum_type->Enum.is_export = et->is_export;
+	if (et->is_export) {
+		Scope *parent = c->context.scope->parent;
+		for_array(i, fields) {
+			Entity *f = fields[i];
+			if (f->kind != Entity_Constant) {
+				continue;
+			}
+			String name = f->token.string;
+			if (is_blank_ident(name)) {
+				continue;
+			}
+			add_entity(c, parent, nullptr, f);
+		}
+	}
 
-	enum_type->Enum.count = make_entity_constant(c->allocator, c->context.scope,
-		make_token_ident(str_lit("count")), t_int, exact_value_i64(fields.count));
-	enum_type->Enum.min_value = make_entity_constant(c->allocator, c->context.scope,
-		make_token_ident(str_lit("min_value")), constant_type, min_value);
-	enum_type->Enum.max_value = make_entity_constant(c->allocator, c->context.scope,
-		make_token_ident(str_lit("max_value")), constant_type, max_value);
+	Scope *s = c->context.scope;
+	enum_type->Enum.count     = alloc_entity_constant(s, make_token_ident(str_lit("count")), t_int, exact_value_i64(fields.count));
+	enum_type->Enum.min_value = alloc_entity_constant(s, make_token_ident(str_lit("min_value")), constant_type, min_value);
+	enum_type->Enum.max_value = alloc_entity_constant(s, make_token_ident(str_lit("max_value")), constant_type, max_value);
 
 	enum_type->Enum.names = make_names_field_for_struct(c, c->context.scope);
 }
@@ -818,10 +750,9 @@ void check_bit_field_type(Checker *c, Type *bit_field_type, AstNode *node) {
 	Map<Entity *> entity_map = {}; // Key: String
 	map_init(&entity_map, c->tmp_allocator, 2*(bft->fields.count));
 
-	isize field_count = 0;
-	Entity **fields  = gb_alloc_array(c->allocator, Entity *, bft->fields.count);
-	u32 *    sizes   = gb_alloc_array(c->allocator, u32,      bft->fields.count);
-	u32 *    offsets = gb_alloc_array(c->allocator, u32,      bft->fields.count);
+	auto fields  = array_make<Entity*>(c->allocator, 0, bft->fields.count);
+	auto sizes   = array_make<u32>    (c->allocator, 0, bft->fields.count);
+	auto offsets = array_make<u32>    (c->allocator, 0, bft->fields.count);
 
 	u32 curr_offset = 0;
 	for_array(i, bft->fields) {
@@ -847,14 +778,15 @@ void check_bit_field_type(Checker *c, Type *bit_field_type, AstNode *node) {
 			error(value, "Bit field bit size must be a constant integer");
 			continue;
 		}
-		i64 bits = i128_to_i64(v.value_integer);
-		if (bits < 0 || bits > 128) {
-			error(value, "Bit field's bit size must be within the range 1..<128, got %lld", cast(long long)bits);
+		i64 bits_ = v.value_integer;
+		if (bits_ < 0 || bits_ > 64) {
+			error(value, "Bit field's bit size must be within the range 1...64, got %lld", cast(long long)bits_);
 			continue;
 		}
+		u32 bits = cast(u32)bits_;
 
-		Type *value_type = make_type_bit_field_value(c->allocator, cast(i32)bits);
-		Entity *e = make_entity_variable(c->allocator, bit_field_type->BitField.scope, ident->Ident.token, value_type, false);
+		Type *value_type = alloc_type_bit_field_value(bits);
+		Entity *e = alloc_entity_variable(bit_field_type->BitField.scope, ident->Ident.token, value_type, false);
 		e->identifier = ident;
 		e->flags |= EntityFlag_BitFieldValue;
 
@@ -867,21 +799,18 @@ void check_bit_field_type(Checker *c, Type *bit_field_type, AstNode *node) {
 			add_entity(c, c->context.scope, nullptr, e);
 			add_entity_use(c, field, e);
 
-			fields [field_count] = e;
-			offsets[field_count] = curr_offset;
-			sizes  [field_count] = cast(i32)bits;
-			field_count++;
+			array_add(&fields,  e);
+			array_add(&offsets, curr_offset);
+			array_add(&sizes,   bits);
 
-			curr_offset += cast(i32)bits;
+			curr_offset += bits;
 		}
 	}
-	GB_ASSERT(field_count <= bft->fields.count);
+	GB_ASSERT(fields.count <= bft->fields.count);
 
 	bit_field_type->BitField.fields      = fields;
-	bit_field_type->BitField.field_count = cast(i32)field_count;
 	bit_field_type->BitField.sizes       = sizes;
 	bit_field_type->BitField.offsets     = offsets;
-
 
 	if (bft->align != nullptr) {
 		i64 custom_align = 1;
@@ -905,6 +834,7 @@ bool check_type_specialization_to(Checker *c, Type *specialization, Type *type, 
 	}
 	// gb_printf_err("#1 %s %s\n", type_to_string(type), type_to_string(specialization));
 	if (t->kind == Type_Struct) {
+
 		if (t->Struct.polymorphic_parent == specialization) {
 			return true;
 		}
@@ -1009,8 +939,7 @@ Type *check_get_params(Checker *c, Scope *scope, AstNode *_params, bool *is_vari
 	bool is_variadic = false;
 	isize variadic_index = -1;
 	bool is_c_vararg = false;
-	Array<Entity *> variables = {};
-	array_init(&variables, c->allocator, variable_count);
+	auto variables = array_make<Entity *>(c->allocator, 0, variable_count);
 	for_array(i, params) {
 		AstNode *param = params[i];
 		if (param->kind != AstNode_Field) {
@@ -1107,7 +1036,7 @@ Type *check_get_params(Checker *c, Scope *scope, AstNode *_params, bool *is_vari
 					detemine_type_from_operand = true;
 					type = t_invalid;
 				} else {
-					type = make_type_generic(c->allocator, c->context.scope, 0, str_lit(""), specialization);
+					type = alloc_type_generic(c->context.scope, 0, str_lit(""), specialization);
 				}
 			} else {
 				bool prev = c->context.allow_polymorphic_types;
@@ -1200,6 +1129,18 @@ Type *check_get_params(Checker *c, Scope *scope, AstNode *_params, bool *is_vari
 			}
 		}
 
+		if (p->flags&FieldFlag_in) {
+			if (is_type_param) {
+				error(param, "'in' cannot be applied to a type parameter");
+				p->flags &= ~FieldFlag_in;
+			} else if (is_variadic) {
+				error(param, "'in' cannot be applied to a variadic parameter");
+				p->flags &= ~FieldFlag_in;
+			}
+		}
+
+		bool is_in = (p->flags&FieldFlag_in) != 0;
+
 		for_array(j, p->names) {
 			AstNode *name = p->names[j];
 			if (!ast_node_expect(name, AstNode_Ident)) {
@@ -1240,7 +1181,7 @@ Type *check_get_params(Checker *c, Scope *scope, AstNode *_params, bool *is_vari
 						type = t_invalid;
 					}
 				}
-				param = make_entity_type_name(c->allocator, scope, name->Ident.token, type);
+				param = alloc_entity_type_name(scope, name->Ident.token, type, EntityState_Resolved);
 				param->TypeName.is_type_alias = true;
 			} else {
 				if (operands != nullptr && variables.count < operands->count) {
@@ -1263,7 +1204,7 @@ Type *check_get_params(Checker *c, Scope *scope, AstNode *_params, bool *is_vari
 					}
 				}
 
-				param = make_entity_param(c->allocator, scope, name->Ident.token, type, is_using, false);
+				param = alloc_entity_param(scope, name->Ident.token, type, is_using, is_in);
 				param->Variable.default_value = value;
 				param->Variable.default_is_nil = default_is_nil;
 				param->Variable.default_is_location = default_is_location;
@@ -1271,6 +1212,7 @@ Type *check_get_params(Checker *c, Scope *scope, AstNode *_params, bool *is_vari
 			if (p->flags&FieldFlag_no_alias) {
 				param->flags |= EntityFlag_NoAlias;
 			}
+			param->state = EntityState_Resolved; // NOTE(bill): This should have be resolved whilst determining it
 
 			add_entity(c, scope, name, param);
 			array_add(&variables, param);
@@ -1287,7 +1229,7 @@ Type *check_get_params(Checker *c, Scope *scope, AstNode *_params, bool *is_vari
 		// NOTE(bill): Change last variadic parameter to be a slice
 		// Custom Calling convention for variadic parameters
 		Entity *end = variables[variadic_index];
-		end->type = make_type_slice(c->allocator, end->type);
+		end->type = alloc_type_slice(end->type);
 		end->flags |= EntityFlag_Ellipsis;
 		if (is_c_vararg) {
 			end->flags |= EntityFlag_CVarArg;
@@ -1308,7 +1250,7 @@ Type *check_get_params(Checker *c, Scope *scope, AstNode *_params, bool *is_vari
 		}
 	}
 
-	Type *tuple = make_type_tuple(c->allocator);
+	Type *tuple = alloc_type_tuple();
 	tuple->Tuple.variables = variables;
 
 	if (success_) *success_ = success;
@@ -1329,7 +1271,7 @@ Type *check_get_results(Checker *c, Scope *scope, AstNode *_results) {
 	if (results.count == 0) {
 		return nullptr;
 	}
-	Type *tuple = make_type_tuple(c->allocator);
+	Type *tuple = alloc_type_tuple();
 
 	isize variable_count = 0;
 	for_array(i, results) {
@@ -1340,8 +1282,7 @@ Type *check_get_results(Checker *c, Scope *scope, AstNode *_results) {
 		}
 	}
 
-	Array<Entity *> variables = {};
-	array_init(&variables, c->allocator, variable_count);
+	auto variables = array_make<Entity *>(c->allocator, 0, variable_count);
 	for_array(i, results) {
 		ast_node(field, Field, results[i]);
 		AstNode *default_value = unparen_expr(field->default_value);
@@ -1392,7 +1333,7 @@ Type *check_get_results(Checker *c, Scope *scope, AstNode *_results) {
 		if (field->names.count == 0) {
 			Token token = ast_node_token(field->type);
 			token.string = str_lit("");
-			Entity *param = make_entity_param(c->allocator, scope, token, type, false, false);
+			Entity *param = alloc_entity_param(scope, token, type, false, false);
 			param->Variable.default_value = value;
 			param->Variable.default_is_nil = default_is_nil;
 			array_add(&variables, param);
@@ -1411,10 +1352,16 @@ Type *check_get_results(Checker *c, Scope *scope, AstNode *_results) {
 					token = name->Ident.token;
 				}
 
-				Entity *param = make_entity_param(c->allocator, scope, token, type, false, false);
+				if (is_blank_ident(token))  {
+					error(name, "Result value cannot be a blank identifer `_`");
+				}
+
+				Entity *param = alloc_entity_param(scope, token, type, false, false);
+				param->flags |= EntityFlag_Result;
 				param->Variable.default_value = value;
 				param->Variable.default_is_nil = default_is_nil;
 				array_add(&variables, param);
+				add_entity(c, scope, name, param);
 			}
 		}
 	}
@@ -1443,6 +1390,10 @@ Type *check_get_results(Checker *c, Scope *scope, AstNode *_results) {
 Type *type_to_abi_compat_param_type(gbAllocator a, Type *original_type) {
 	Type *new_type = original_type;
 
+	if (is_type_boolean(original_type)) {
+		return t_llvm_bool;
+	}
+
 	if (build_context.ODIN_ARCH == "x86") {
 		return new_type;
 	}
@@ -1459,7 +1410,7 @@ Type *type_to_abi_compat_param_type(gbAllocator a, Type *original_type) {
 			i64 sz = bt->Basic.size;
 			// if (sz > 8 && build_context.word_size < 8) {
 			if (sz > 8) {
-				new_type = make_type_pointer(a, original_type);
+				new_type = alloc_type_pointer(original_type);
 			}
 			break;
 		}
@@ -1475,15 +1426,15 @@ Type *type_to_abi_compat_param_type(gbAllocator a, Type *original_type) {
 		// Could be in C too
 		case Type_Struct:
 		{
-			i64 align = type_align_of(a, original_type);
-			i64 size  = type_size_of(a, original_type);
+			i64 align = type_align_of(original_type);
+			i64 size  = type_size_of(original_type);
 			switch (8*size) {
 			case 8:  new_type = t_u8;  break;
 			case 16: new_type = t_u16; break;
 			case 32: new_type = t_u32; break;
 			case 64: new_type = t_u64; break;
 			default:
-				new_type = make_type_pointer(a, original_type);
+				new_type = alloc_type_pointer(original_type);
 				break;
 			}
 
@@ -1500,7 +1451,7 @@ Type *type_to_abi_compat_param_type(gbAllocator a, Type *original_type) {
 			i64 sz = bt->Basic.size;
 			// if (sz > 8 && build_context.word_size < 8) {
 			if (sz > 8) {
-				new_type = make_type_pointer(a, original_type);
+				new_type = alloc_type_pointer(original_type);
 			}
 
 			break;
@@ -1516,10 +1467,10 @@ Type *type_to_abi_compat_param_type(gbAllocator a, Type *original_type) {
 		case Type_Union:
 		// Could be in C too
 		case Type_Struct: {
-			i64 align = type_align_of(a, original_type);
-			i64 size  = type_size_of(a, original_type);
+			i64 align = type_align_of(original_type);
+			i64 size  = type_size_of(original_type);
 			if (8*size > 16) {
-				new_type = make_type_pointer(a, original_type);
+				new_type = alloc_type_pointer(original_type);
 			}
 
 			break;
@@ -1564,8 +1515,8 @@ Type *type_to_abi_compat_result_type(gbAllocator a, Type *original_type) {
 
 
 		default: {
-			i64 align = type_align_of(a, original_type);
-			i64 size  = type_size_of(a, original_type);
+			i64 align = type_align_of(original_type);
+			i64 size  = type_size_of(original_type);
 			switch (8*size) {
 #if 1
 			case 8:  new_type = t_u8;  break;
@@ -1586,10 +1537,9 @@ Type *type_to_abi_compat_result_type(gbAllocator a, Type *original_type) {
 	}
 
 	if (new_type != original_type) {
-		Type *tuple = make_type_tuple(a);
-		Array<Entity *> variables = {};
-		array_init(&variables, a, 1);
-		array_add(&variables, make_entity_param(a, original_type->Tuple.variables[0]->scope, empty_token, new_type, false, false));
+		Type *tuple = alloc_type_tuple();
+		auto variables = array_make<Entity *>(a, 0, 1);
+		array_add(&variables, alloc_entity_param(original_type->Tuple.variables[0]->scope, empty_token, new_type, false, false));
 		tuple->Tuple.variables = variables;
 		new_type = tuple;
 	}
@@ -1611,7 +1561,7 @@ bool abi_compat_return_by_value(gbAllocator a, ProcCallingConvention cc, Type *a
 
 
 	if (build_context.ODIN_OS == "windows") {
-		i64 size = 8*type_size_of(a, abi_return_type);
+		i64 size = 8*type_size_of(abi_return_type);
 		switch (size) {
 		case 0:
 		case 8:
@@ -1633,6 +1583,10 @@ bool check_procedure_type(Checker *c, Type *type, AstNode *proc_type_node, Array
 	if (c->context.polymorphic_scope == nullptr && c->context.allow_polymorphic_types) {
 		c->context.polymorphic_scope = c->context.scope;
 	}
+
+	CheckerContext prev = c->context;
+	defer (c->context = prev);
+	c->context.curr_proc_sig = type;
 
 	bool variadic = false;
 	isize variadic_index = -1;
@@ -1657,6 +1611,12 @@ bool check_procedure_type(Checker *c, Type *type, AstNode *proc_type_node, Array
 		}
 	}
 
+	if (result_count > 0) {
+		Entity *first = results->Tuple.variables[0];
+		type->Proc.has_named_results = first->token.string != "";
+	}
+
+
 	ProcCallingConvention cc = pt->calling_convention;
 	if (cc == ProcCC_ForeignBlockDefault) {
 		cc = ProcCC_CDecl;
@@ -1673,7 +1633,7 @@ bool check_procedure_type(Checker *c, Type *type, AstNode *proc_type_node, Array
 	type->Proc.results              = results;
 	type->Proc.result_count         = cast(i32)result_count;
 	type->Proc.variadic             = variadic;
-	type->Proc.variadic_index       = variadic_index;
+	type->Proc.variadic_index       = cast(i32)variadic_index;
 	type->Proc.calling_convention   = cc;
 	type->Proc.is_polymorphic       = pt->generic;
 	type->Proc.specialization_count = specialization_count;
@@ -1704,7 +1664,7 @@ bool check_procedure_type(Checker *c, Type *type, AstNode *proc_type_node, Array
 	type->Proc.is_polymorphic = is_polymorphic;
 
 
-	type->Proc.abi_compat_params = gb_alloc_array(c->allocator, Type *, param_count);
+	type->Proc.abi_compat_params = array_make<Type *>(c->allocator, param_count);
 	for (isize i = 0; i < param_count; i++) {
 		Entity *e = type->Proc.params->Tuple.variables[i];
 		if (e->kind == Entity_Variable) {
@@ -1751,7 +1711,7 @@ i64 check_array_count(Checker *c, Operand *o, AstNode *e) {
 	Type *type = base_type(o->type);
 	if (is_type_untyped(type) || is_type_integer(type)) {
 		if (o->value.kind == ExactValue_Integer) {
-			i64 count = i128_to_i64(o->value.value_integer);
+			i64 count = o->value.value_integer;
 			if (count >= 0) {
 				return count;
 			}
@@ -1764,23 +1724,24 @@ i64 check_array_count(Checker *c, Operand *o, AstNode *e) {
 	return 0;
 }
 
-Type *make_optional_ok_type(gbAllocator a, Type *value) {
+Type *make_optional_ok_type(Type *value) {
+	gbAllocator a = heap_allocator();
 	bool typed = true;
-	Type *t = make_type_tuple(a);
-	array_init(&t->Tuple.variables, a, 2);
-	array_add (&t->Tuple.variables, make_entity_field(a, nullptr, blank_token, value,  false, 0));
-	array_add (&t->Tuple.variables, make_entity_field(a, nullptr, blank_token, typed ? t_bool : t_untyped_bool, false, 1));
+	Type *t = alloc_type_tuple();
+	array_init(&t->Tuple.variables, a, 0, 2);
+	array_add (&t->Tuple.variables, alloc_entity_field(nullptr, blank_token, value,  false, 0));
+	array_add (&t->Tuple.variables, alloc_entity_field(nullptr, blank_token, typed ? t_bool : t_untyped_bool, false, 1));
 	return t;
 }
 
-void generate_map_entry_type(gbAllocator a, Type *type) {
+void init_map_entry_type(Type *type) {
 	GB_ASSERT(type->kind == Type_Map);
 	if (type->Map.entry_type != nullptr) return;
 
 	// NOTE(bill): The preload types may have not been set yet
 	GB_ASSERT(t_map_key != nullptr);
-
-	Type *entry_type = make_type_struct(a);
+	gbAllocator a = heap_allocator();
+	Type *entry_type = alloc_type_struct();
 
 	/*
 	struct {
@@ -1794,31 +1755,30 @@ void generate_map_entry_type(gbAllocator a, Type *type) {
 	dummy_node->kind = AstNode_Invalid;
 	Scope *s = create_scope(universal_scope, a);
 
-	isize field_count = 3;
-	Array<Entity *> fields = {};
-	array_init(&fields, a, 3);
-	array_add(&fields, make_entity_field(a, s, make_token_ident(str_lit("key")),   t_map_key,       false, 0));
-	array_add(&fields, make_entity_field(a, s, make_token_ident(str_lit("next")),  t_int,           false, 1));
-	array_add(&fields, make_entity_field(a, s, make_token_ident(str_lit("value")), type->Map.value, false, 2));
+	auto fields = array_make<Entity *>(a, 0, 3);
+	array_add(&fields, alloc_entity_field(s, make_token_ident(str_lit("key")),   t_map_key,       false, 0, EntityState_Resolved));
+	array_add(&fields, alloc_entity_field(s, make_token_ident(str_lit("next")),  t_int,           false, 1, EntityState_Resolved));
+	array_add(&fields, alloc_entity_field(s, make_token_ident(str_lit("value")), type->Map.value, false, 2, EntityState_Resolved));
 
 
-	entry_type->Struct.fields              = fields;
-	entry_type->Struct.fields_in_src_order = fields;
+	entry_type->Struct.fields = fields;
 
 	// type_set_offsets(a, entry_type);
 	type->Map.entry_type = entry_type;
 }
 
-void generate_map_internal_types(gbAllocator a, Type *type) {
+void init_map_internal_types(Type *type) {
 	GB_ASSERT(type->kind == Type_Map);
-	generate_map_entry_type(a, type);
+	init_map_entry_type(type);
+	if (type->Map.internal_type != nullptr) return;
 	if (type->Map.generated_struct_type != nullptr) return;
+
 	Type *key   = type->Map.key;
 	Type *value = type->Map.value;
 	GB_ASSERT(key != nullptr);
 	GB_ASSERT(value != nullptr);
 
-	Type *generated_struct_type = make_type_struct(a);
+	Type *generated_struct_type = alloc_type_struct();
 
 	/*
 	struct {
@@ -1826,26 +1786,25 @@ void generate_map_internal_types(gbAllocator a, Type *type) {
 		entries: [dynamic]EntryType;
 	}
 	*/
+	gbAllocator a = heap_allocator();
 	AstNode *dummy_node = gb_alloc_item(a, AstNode);
 	dummy_node->kind = AstNode_Invalid;
 	Scope *s = create_scope(universal_scope, a);
 
-	Type *hashes_type  = make_type_dynamic_array(a, t_int);
-	Type *entries_type = make_type_dynamic_array(a, type->Map.entry_type);
+	Type *hashes_type  = alloc_type_dynamic_array(t_int);
+	Type *entries_type = alloc_type_dynamic_array(type->Map.entry_type);
 
 
-	Array<Entity *> fields = {};
-	array_init(&fields, a, 2);
-	array_add(&fields, make_entity_field(a, s, make_token_ident(str_lit("hashes")),  hashes_type,  false, 0));
-	array_add(&fields, make_entity_field(a, s, make_token_ident(str_lit("entries")), entries_type, false, 1));
+	auto fields = array_make<Entity *>(a, 0, 2);
+	array_add(&fields, alloc_entity_field(s, make_token_ident(str_lit("hashes")),  hashes_type,  false, 0, EntityState_Resolved));
+	array_add(&fields, alloc_entity_field(s, make_token_ident(str_lit("entries")), entries_type, false, 1, EntityState_Resolved));
 
-	generated_struct_type->Struct.fields              = fields;
-	generated_struct_type->Struct.fields_in_src_order = fields;
+	generated_struct_type->Struct.fields = fields;
 
-	type_set_offsets(a, generated_struct_type);
+	type_set_offsets(generated_struct_type);
 	type->Map.generated_struct_type = generated_struct_type;
-	type->Map.internal_type         = make_type_pointer(a, generated_struct_type);
-	type->Map.lookup_result_type    = make_optional_ok_type(a, value);
+	type->Map.internal_type         = generated_struct_type;
+	type->Map.lookup_result_type    = make_optional_ok_type(value);
 }
 
 void check_map_type(Checker *c, Type *type, AstNode *node) {
@@ -1870,10 +1829,12 @@ void check_map_type(Checker *c, Type *type, AstNode *node) {
 
 
 	init_preload(c);
-	generate_map_internal_types(c->allocator, type);
+	init_map_internal_types(type);
 
 	// error(node, "'map' types are not yet implemented");
 }
+
+
 
 bool check_type_internal(Checker *c, AstNode *e, Type **type, Type *named_type) {
 	GB_ASSERT_NOT_NULL(type);
@@ -1884,28 +1845,46 @@ bool check_type_internal(Checker *c, AstNode *e, Type **type, Type *named_type) 
 
 	switch (e->kind) {
 	case_ast_node(i, Ident, e);
-
 		Operand o = {};
-		check_ident(c, &o, e, named_type, nullptr, false);
+		Entity *entity = check_ident(c, &o, e, named_type, nullptr, false);
 
-		gbString err_str;
+		gbString err_str = nullptr;
+		defer (gb_string_free(err_str));
+
 		switch (o.mode) {
 		case Addressing_Invalid:
 			break;
-		case Addressing_Type:
+		case Addressing_Type: {
 			*type = o.type;
+			if (!c->context.in_polymorphic_specialization) {
+				Type *t = base_type(o.type);
+				if (t != nullptr && is_type_polymorphic_struct_unspecialized(t)) {
+					err_str = expr_to_string(e);
+					error(e, "Invalid use of a non-specialized polymorphic type '%s'", err_str);
+					return true;
+				}
+			}
+
+			// if (c->context.type_level == 0 && entity->state == EntityState_InProgress) {
+			// 	error(entity->token, "Illegal declaration cycle of `%.*s`", LIT(entity->token.string));
+			// 	for_array(j, *c->context.type_path) {
+			// 		Entity *k = (*c->context.type_path)[j];
+			// 		error(k->token, "\t%.*s refers to", LIT(k->token.string));
+			// 	}
+			// 	error(entity->token, "\t%.*s", LIT(entity->token.string));
+			// 	*type = t_invalid;
+			// }
 			return true;
+		}
 
 		case Addressing_NoValue:
 			err_str = expr_to_string(e);
 			error(e, "'%s' used as a type", err_str);
-			gb_string_free(err_str);
 			break;
 
 		default:
 			err_str = expr_to_string(e);
 			error(e, "'%s' used as a type when not a type", err_str);
-			gb_string_free(err_str);
 			break;
 		}
 	case_end;
@@ -1914,10 +1893,10 @@ bool check_type_internal(Checker *c, AstNode *e, Type **type, Type *named_type) 
 		return check_type_internal(c, ht->type, type, named_type);
 	case_end;
 
-	case_ast_node(at, AliasType, e);
-		error(e, "Invalid use of '#alias'");
+	case_ast_node(dt, DistinctType, e);
+		error(e, "Invalid use of a distinct type");
 		// NOTE(bill): Treat it as a HelperType to remove errors
-		return check_type_internal(c, at->type, type, named_type);
+		return check_type_internal(c, dt->type, type, named_type);
 	case_end;
 
 	case_ast_node(pt, PolyType, e);
@@ -1931,16 +1910,19 @@ bool check_type_internal(Checker *c, AstNode *e, Type **type, Type *named_type) 
 		Token token = ident->Ident.token;
 		Type *specific = nullptr;
 		if (pt->specialization != nullptr) {
+			CheckerContext prev = c->context; defer (c->context = prev);
+			c->context.in_polymorphic_specialization = true;
+
 			AstNode *s = pt->specialization;
 			specific = check_type(c, s);
-			if (false && !is_type_polymorphic_struct(specific)) {
-				gbString str = type_to_string(specific);
-				error(s, "Expected a polymorphic struct, got %s", str);
-				gb_string_free(str);
-				specific = nullptr;
-			}
+			// if (!is_type_polymorphic_struct(specific)) {
+			// 	gbString str = type_to_string(specific);
+			// 	error(s, "Expected a polymorphic struct, got %s", str);
+			// 	gb_string_free(str);
+			// 	specific = nullptr;
+			// }
 		}
-		Type *t = make_type_generic(c->allocator, c->context.scope, 0, token.string, specific);
+		Type *t = alloc_type_generic(c->context.scope, 0, token.string, specific);
 		if (c->context.allow_polymorphic_types) {
 			Scope *ps = c->context.polymorphic_scope;
 			Scope *s = c->context.scope;
@@ -1949,8 +1931,9 @@ bool check_type_internal(Checker *c, AstNode *e, Type **type, Type *named_type) 
 				GB_ASSERT(is_scope_an_ancestor(ps, s) >= 0);
 				entity_scope = ps;
 			}
-			Entity *e = make_entity_type_name(c->allocator, entity_scope, token, t);
+			Entity *e = alloc_entity_type_name(entity_scope, token, t);
 			e->TypeName.is_type_alias = true;
+			e->state = EntityState_Resolved;
 			add_entity(c, ps, ident, e);
 			add_entity(c, s, ident, e);
 		} else {
@@ -1959,6 +1942,7 @@ bool check_type_internal(Checker *c, AstNode *e, Type **type, Type *named_type) 
 			return false;
 		}
 		*type = t;
+		set_base_type(named_type, *type);
 		return true;
 	case_end;
 
@@ -1988,22 +1972,23 @@ bool check_type_internal(Checker *c, AstNode *e, Type **type, Type *named_type) 
 	case_end;
 
 	case_ast_node(pe, ParenExpr, e);
-		*type = check_type(c, pe->expr, named_type);
+		*type = check_type_expr(c, pe->expr, named_type);
+		set_base_type(named_type, *type);
 		return true;
 	case_end;
 
 	case_ast_node(ue, UnaryExpr, e);
-		if (ue->op.kind == Token_Pointer) {
-			*type = make_type_pointer(c->allocator, check_type(c, ue->expr));
+		switch (ue->op.kind) {
+		case Token_Pointer:
+			*type = alloc_type_pointer(check_type(c, ue->expr));
+			set_base_type(named_type, *type);
 			return true;
-		} /* else if (ue->op.kind == Token_Maybe) {
-			*type = make_type_maybe(c->allocator, check_type(c, ue->expr));
-			return true;
-		} */
+		}
 	case_end;
 
 	case_ast_node(pt, PointerType, e);
-		*type = make_type_pointer(c->allocator, check_type(c, pt->type));
+		*type = alloc_type_pointer(check_type(c, pt->type));
+		set_base_type(named_type, *type);
 		return true;
 	case_end;
 
@@ -2019,23 +2004,29 @@ bool check_type_internal(Checker *c, AstNode *e, Type **type, Type *named_type) 
 				error(at->count, "... can only be used in conjuction with compound literals");
 				count = 0;
 			}
-			Type *elem = check_type(c, at->elem, nullptr);
-			*type = make_type_array(c->allocator, elem, count, generic_type);
+			Type *elem = check_type_expr(c, at->elem, nullptr);
+			*type = alloc_type_array(elem, count, generic_type);
 		} else {
 			Type *elem = check_type(c, at->elem);
-			*type = make_type_slice(c->allocator, elem);
+			*type = alloc_type_slice(elem);
 		}
+		set_base_type(named_type, *type);
 		return true;
 	case_end;
 
 	case_ast_node(dat, DynamicArrayType, e);
 		Type *elem = check_type(c, dat->elem);
-		*type = make_type_dynamic_array(c->allocator, elem);
+		*type = alloc_type_dynamic_array(elem);
+		set_base_type(named_type, *type);
 		return true;
 	case_end;
 
 	case_ast_node(st, StructType, e);
-		*type = make_type_struct(c->allocator);
+		CheckerContext prev = c->context; defer (c->context = prev);
+		c->context.in_polymorphic_specialization = false;
+		c->context.type_level += 1;
+
+		*type = alloc_type_struct();
 		set_base_type(named_type, *type);
 		check_open_scope(c, e);
 		check_struct_type(c, *type, e, nullptr, named_type);
@@ -2045,7 +2036,11 @@ bool check_type_internal(Checker *c, AstNode *e, Type **type, Type *named_type) 
 	case_end;
 
 	case_ast_node(ut, UnionType, e);
-		*type = make_type_union(c->allocator);
+		CheckerContext prev = c->context; defer (c->context = prev);
+		c->context.in_polymorphic_specialization = false;
+		c->context.type_level += 1;
+
+		*type = alloc_type_union();
 		set_base_type(named_type, *type);
 		check_open_scope(c, e);
 		check_union_type(c, *type, e);
@@ -2055,7 +2050,11 @@ bool check_type_internal(Checker *c, AstNode *e, Type **type, Type *named_type) 
 	case_end;
 
 	case_ast_node(et, EnumType, e);
-		*type = make_type_enum(c->allocator);
+		bool ips = c->context.in_polymorphic_specialization;
+		defer (c->context.in_polymorphic_specialization = ips);
+		c->context.in_polymorphic_specialization = false;
+
+		*type = alloc_type_enum();
 		set_base_type(named_type, *type);
 		check_open_scope(c, e);
 		check_enum_type(c, *type, named_type, e);
@@ -2065,7 +2064,7 @@ bool check_type_internal(Checker *c, AstNode *e, Type **type, Type *named_type) 
 	case_end;
 
 	case_ast_node(et, BitFieldType, e);
-		*type = make_type_bit_field(c->allocator);
+		*type = alloc_type_bit_field();
 		set_base_type(named_type, *type);
 		check_open_scope(c, e);
 		check_bit_field_type(c, *type, e);
@@ -2074,7 +2073,11 @@ bool check_type_internal(Checker *c, AstNode *e, Type **type, Type *named_type) 
 	case_end;
 
 	case_ast_node(pt, ProcType, e);
-		*type = alloc_type(c->allocator, Type_Proc);
+		bool ips = c->context.in_polymorphic_specialization;
+		defer (c->context.in_polymorphic_specialization = ips);
+		c->context.in_polymorphic_specialization = false;
+
+		*type = alloc_type(Type_Proc);
 		set_base_type(named_type, *type);
 		check_open_scope(c, e);
 		check_procedure_type(c, *type, e);
@@ -2083,7 +2086,11 @@ bool check_type_internal(Checker *c, AstNode *e, Type **type, Type *named_type) 
 	case_end;
 
 	case_ast_node(mt, MapType, e);
-		*type = alloc_type(c->allocator, Type_Map);
+		bool ips = c->context.in_polymorphic_specialization;
+		defer (c->context.in_polymorphic_specialization = ips);
+		c->context.in_polymorphic_specialization = false;
+
+		*type = alloc_type(Type_Map);
 		set_base_type(named_type, *type);
 		check_map_type(c, *type, e);
 		return true;
@@ -2094,6 +2101,7 @@ bool check_type_internal(Checker *c, AstNode *e, Type **type, Type *named_type) 
 		check_expr_or_type(c, &o, e);
 		if (o.mode == Addressing_Type) {
 			*type = o.type;
+			set_base_type(named_type, *type);
 			return true;
 		}
 	case_end;
@@ -2103,6 +2111,7 @@ bool check_type_internal(Checker *c, AstNode *e, Type **type, Type *named_type) 
 		check_expr_or_type(c, &o, e);
 		if (o.mode == Addressing_Type) {
 			*type = o.type;
+			set_base_type(named_type, *type);
 			return true;
 		}
 	case_end;
@@ -2112,9 +2121,15 @@ bool check_type_internal(Checker *c, AstNode *e, Type **type, Type *named_type) 
 	return false;
 }
 
+Type *check_type(Checker *c, AstNode *e) {
+	auto prev_context = c->context; defer (c->context = prev_context);
+	c->context.type_path = new_checker_type_path();
+	defer (destroy_checker_type_path(c->context.type_path));
 
+	return check_type_expr(c, e, nullptr);
+}
 
-Type *check_type(Checker *c, AstNode *e, Type *named_type) {
+Type *check_type_expr(Checker *c, AstNode *e, Type *named_type) {
 	Type *type = nullptr;
 	bool ok = check_type_internal(c, e, &type, named_type);
 
