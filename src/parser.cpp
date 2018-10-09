@@ -4375,12 +4375,14 @@ ParseFileError parse_files(Parser *p, String init_filename) {
 		array_add(&p->imports, runtime_file);
 		shared_file_count++;
 	}
+	/*
 	if (!build_context.generate_docs) {
 		String s = get_fullpath_core(heap_allocator(), str_lit("_soft_numbers.helm"));
 		ImportedFile runtime_file = {ImportedFile_Shared, s, s, init_pos};
 		array_add(&p->imports, runtime_file);
 		shared_file_count++;
 	}
+	*/
 
 	array_add(&p->imports, init_imported_file);
 	p->init_fullpath = init_fullpath;

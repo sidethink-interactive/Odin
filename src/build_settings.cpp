@@ -291,7 +291,8 @@ String get_fullpath_relative(gbAllocator a, String base_dir, String path) {
 String get_fullpath_core(gbAllocator a, String path) {
 	String module_dir = odin_root_dir();
 
-	String core = str_lit("core/");
+	String core = str_lit("../helm-rewrite/standard_lib/");
+	//String core = str_lit("core/");
 
 	isize str_len = module_dir.len + core.len + path.len;
 	u8 *str = gb_alloc_array(heap_allocator(), u8, str_len+1);

@@ -8681,16 +8681,19 @@ void ir_gen_tree(irGen *s) {
 
 		ir_fill_slice(proc, global_args, argv, ir_emit_conv(proc, argc, t_int));
 
+		irValue *main_ret;
+
 		ir_emit(proc, ir_alloc_instr(proc, irInstr_StartupRuntime));
 		{
 			irValue **found = map_get(&proc->module->values, hash_entity(entry_point));
 			if (found != nullptr) {
 				Array<irValue *> args = {};
-				ir_emit_call(proc, *found, args);
+				main_ret = ir_emit_call(proc, *found, args);
 			}
 		}
 
-		ir_emit_return(proc, v_zero32);
+		//ir_emit_return(proc, v_zero32);
+		ir_emit_return(proc, main_ret);
 	}
 
 #if 0 && defined(GB_SYSTEM_WINDOWS)

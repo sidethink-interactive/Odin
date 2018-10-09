@@ -709,7 +709,7 @@ int main(int arg_count, char **arg_ptr) {
 
 	array_init(&library_collections, heap_allocator());
 	// NOTE(bill): 'core' cannot be (re)defined by the user
-	add_library_collection(str_lit("core"), get_fullpath_relative(heap_allocator(), odin_root_dir(), str_lit("core")));
+	add_library_collection(str_lit("std"), get_fullpath_relative(heap_allocator(), odin_root_dir(), str_lit("../helm-rewrite/standard_lib/")));
 
 	Array<String> args = setup_args(arg_count, arg_ptr);
 

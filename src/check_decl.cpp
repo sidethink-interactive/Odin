@@ -541,7 +541,7 @@ void check_proc_decl(Checker *c, Entity *e, DeclInfo *d) {
 
 	if (d->scope->file != nullptr && e->token.string == "main") {
 		if (pt->param_count != 0 ||
-		    pt->result_count != 0) {
+		    pt->result_count != 1) {
 			gbString str = type_to_string(proc_type);
 			error(e->token, "Procedure type of 'main' was expected to be 'proc()', got %s", str);
 			gb_string_free(str);
